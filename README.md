@@ -70,7 +70,7 @@ jobs:
 
 | Job | Runs | Blocks on |
 |---|---|---|
-| `versions` | always | a `python-version` that is not `3.N`, or a `python-versions` or `python-versions-experimental` that is not a JSON array of versions |
+| `versions` | always | a `python-versions` or `python-versions-experimental` that is not a JSON array of versions, or, when either is set, a `python-version` that is not `3.N` |
 | `lint` | always | `uv sync --locked`, ruff, ruff format, mypy (`typecheck`) |
 | `test (<v>)` | once per version in `python-versions` | pytest failures on any version; coverage under `coverage-threshold` on `python-version` |
 | `test-experimental (<v>)` | once per version in `python-versions-experimental` | nothing: failures show but never reach the `gate` |

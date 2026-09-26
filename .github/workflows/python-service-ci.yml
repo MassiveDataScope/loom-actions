@@ -226,14 +226,15 @@ jobs:
 
 
           primary = os.environ["PYTHON_VERSION"].strip()
-          if not RELEASE.fullmatch(primary):
-              fail("python-version", primary, "not a version like 3.12")
           required = versions("python-versions", RELEASE)
+          declared = versions("python-versions-experimental", PRERELEASE)
+          # Without a matrix python-version is passed on untouched, a patch pin like
+          # 3.12.8 included, as before; with one it has to match the list's format.
+          if (required or declared) and not RELEASE.fullmatch(primary):
+              fail("python-version", primary, "not a version like 3.12, as a matrix needs")
           if primary not in required:
               required.append(primary)
-          experimental = [
-              v for v in versions("python-versions-experimental", PRERELEASE) if v not in required
-          ]
+          experimental = [v for v in declared if v not in required]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"primary={primary}\n")
               out.write(f"required={json.dumps(required)}\n")

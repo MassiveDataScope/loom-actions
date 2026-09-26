@@ -506,10 +506,19 @@ class TestPythonVersions:
         assert "Traceback" not in completed.stderr
         assert outputs == {}
 
-    def test_an_invalid_primary_is_named_too(self, tmp_path: Path) -> None:
-        completed, _ = self._normalise(tmp_path, primary="3")
+    @pytest.mark.parametrize(("versions", "experimental"), [('["3.12"]', ""), ("", '["3.15-dev"]')])
+    def test_with_a_matrix_an_invalid_primary_is_named_too(
+        self, tmp_path: Path, versions: str, experimental: str
+    ) -> None:
+        completed, _ = self._normalise(tmp_path, versions, experimental, primary="3.12.8")
         assert completed.returncode == 1
-        assert "::error title=Invalid python-version::3: " in completed.stdout
+        assert "::error title=Invalid python-version::3.12.8: " in completed.stdout
+
+    def test_without_a_matrix_the_primary_is_passed_on_untouched(self, tmp_path: Path) -> None:
+        """SC-001: a caller pinning a patch release keeps running on it."""
+        completed, outputs = self._normalise(tmp_path, primary="3.12.8")
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert outputs == {"primary": "3.12.8", "required": '["3.12.8"]', "experimental": "[]"}
 
     def test_experimental_never_blocks_the_gate(self) -> None:
         experimental = _jobs()["test-experimental"]
