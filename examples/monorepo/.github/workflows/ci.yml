@@ -20,6 +20,10 @@ jobs:
     uses: ./.github/workflows/python-service-ci.yml
     with:
       python-version: "3.12"
+      # A real caller writes the list, e.g. '["3.12", "3.14"]'. Here it comes from the
+      # PYTHON_VERSIONS variable of tests/act/run-monorepo.sh, empty unless set, so the
+      # default run is the primary version alone.
+      python-versions: ${{ vars.PYTHON_VERSIONS }}
       working-directory: examples/monorepo/apps/api
       semantic-branch-config: examples/monorepo/apps/api/pyproject.toml
       image-context: examples/monorepo

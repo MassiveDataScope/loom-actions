@@ -5,6 +5,9 @@
 # download-artifact v4, and python-service-ci pins v7 and v8, so the test
 # results never reach the report. This runs a throwaway copy of the checkout
 # in which those two pins are v4; the workflow in the repository is untouched.
+#
+# PYTHON_VERSIONS, a JSON array like '["3.12","3.14"]', becomes the example's
+# python-versions; unset, the tests run on its python-version alone.
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
@@ -33,7 +36,12 @@ cd "${work}"
 git init -q
 git add -A
 git -c user.name=act -c user.email=act@localhost commit -qm "act run of examples/monorepo"
+variables=()
+if [ -n "${PYTHON_VERSIONS:-}" ]; then
+  variables=(--var "PYTHON_VERSIONS=${PYTHON_VERSIONS}")
+fi
 act pull_request \
   -W examples/monorepo/.github/workflows/ci.yml \
   -e tests/act/events/pull_request.json \
-  --artifact-server-path "${artifacts}"
+  --artifact-server-path "${artifacts}" \
+  ${variables[@]+"${variables[@]}"}
