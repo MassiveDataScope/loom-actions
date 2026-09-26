@@ -7,6 +7,22 @@ on:
         description: "Python version the service runs on"
         required: true
         type: string
+      python-versions:
+        description: >-
+          JSON array of the Python versions the tests run on, one leg each, like
+          '["3.12", "3.14"]'. Empty by default: python-version alone. Duplicates run once and
+          python-version is added when missing; lint, types, coverage threshold, report,
+          Sonar and the image stay on python-version
+        required: false
+        type: string
+        default: ""
+      python-versions-experimental:
+        description: >-
+          JSON array of Python versions tested without blocking the gate, like '["3.15-dev"]';
+          prereleases are allowed. Versions already in python-versions are ignored here
+        required: false
+        type: string
+        default: ""
       uv-version:
         description: "uv version, pinned"
         required: false
@@ -154,6 +170,78 @@ env:
   PROJECT_PREFIX: ${{ inputs.working-directory != '.' && inputs.working-directory != '' && format('{0}/', inputs.working-directory) || '' }}
 
 jobs:
+  # Normalises the version lists before any matrix reads them: fromJSON on a bad value
+  # breaks the run without naming the value, and a duplicate would run twice.
+  versions:
+    name: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      primary: ${{ steps.normalize.outputs.primary }}
+      required: ${{ steps.normalize.outputs.required }}
+      experimental: ${{ steps.normalize.outputs.experimental }}
+    steps:
+      - name: Normalise the Python versions
+        id: normalize
+        env:
+          PYTHON_VERSION: ${{ inputs.python-version }}
+          PYTHON_VERSIONS: ${{ inputs.python-versions }}
+          PYTHON_VERSIONS_EXPERIMENTAL: ${{ inputs.python-versions-experimental }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          RELEASE = re.compile(r"3\.[0-9]+")
+          PRERELEASE = re.compile(r"3\.[0-9]+(-dev)?")
+
+
+          def fail(name, value, why):
+              print(f"::error title=Invalid {name}::{value}: {why}")
+              sys.exit(1)
+
+
+          def versions(name, pattern):
+              raw = os.environ[name.upper().replace("-", "_")].strip()
+              if not raw:
+                  return []
+              try:
+                  parsed = json.loads(raw)
+              except json.JSONDecodeError:
+                  fail(name, raw, "not JSON; pass an array of strings like '[\"3.12\", \"3.14\"]'")
+              if not isinstance(parsed, list):
+                  fail(name, raw, "not a JSON array of strings")
+              found = []
+              for item in parsed:
+                  if not isinstance(item, str) or not pattern.fullmatch(item):
+                      shown = item if isinstance(item, str) else json.dumps(item)
+                      fail(name, shown, "not a version like 3.12, quoted as a string")
+                  if item not in found:
+                      found.append(item)
+              return found
+
+
+          primary = os.environ["PYTHON_VERSION"].strip()
+          if not RELEASE.fullmatch(primary):
+              fail("python-version", primary, "not a version like 3.12")
+          required = versions("python-versions", RELEASE)
+          if primary not in required:
+              required.append(primary)
+          experimental = [
+              v for v in versions("python-versions-experimental", PRERELEASE) if v not in required
+          ]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"primary={primary}\n")
+              out.write(f"required={json.dumps(required)}\n")
+              out.write(f"experimental={json.dumps(experimental)}\n")
+          print(f"required: {' '.join(required)}")
+          print(f"experimental: {' '.join(experimental) or 'none'}")
+          PY
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -197,18 +285,26 @@ jobs:
         run: uv run --locked mypy "${SRC_DIR}"
 
   test:
-    name: test
+    name: test (${{ matrix.python }})
+    needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(needs.versions.outputs.required) }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
     env:
       SRC_DIR: ${{ inputs.src-dir }}
       TEST_DIR: ${{ inputs.test-dir }}
-      COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
+      PYTHON_VERSION: ${{ matrix.python }}
+      # The coverage threshold is a property of the primary leg alone; the others
+      # measure coverage for their artifact but never fail on it.
+      COVERAGE_THRESHOLD: ${{ matrix.python == needs.versions.outputs.primary && inputs.coverage-threshold || 0 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -217,14 +313,23 @@ jobs:
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: ${{ inputs.uv-version }}
-          python-version: ${{ inputs.python-version }}
+          python-version: ${{ matrix.python }}
           enable-cache: true
           cache-dependency-glob: ${{ env.PROJECT_PREFIX }}uv.lock
+          cache-suffix: python-${{ matrix.python }}
+
+      - name: Install the locked environment
+        run: |
+          set -euo pipefail
+          if ! uv sync --locked --python "${PYTHON_VERSION}"; then
+            echo "::error title=No locked environment for Python ${PYTHON_VERSION}::uv.lock or requires-python does not cover it; widen requires-python and run 'uv lock', or drop it from python-versions."
+            exit 1
+          fi
 
       - name: Run the test suite with coverage
         run: |
           set -euo pipefail
-          uv run --locked --with "pytest-cov==7.1.0" pytest "${TEST_DIR}" \
+          uv run --locked --python "${PYTHON_VERSION}" --with "pytest-cov==7.1.0" pytest "${TEST_DIR}" \
             --cov="${SRC_DIR}" \
             --cov-report=term-missing:skip-covered \
             --cov-report=xml:coverage.xml \
@@ -236,7 +341,100 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: test-results-${{ matrix.python }}
+          path: |
+            ${{ env.PROJECT_PREFIX }}junit.xml
+            ${{ env.PROJECT_PREFIX }}coverage.xml
+            ${{ env.PROJECT_PREFIX }}coverage.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      # report and sonar read the primary's results under the name they always had.
+      - name: Store the primary test results
+        if: ${{ !cancelled() && matrix.python == needs.versions.outputs.primary }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
           name: test-results
+          path: |
+            ${{ env.PROJECT_PREFIX }}junit.xml
+            ${{ env.PROJECT_PREFIX }}coverage.xml
+            ${{ env.PROJECT_PREFIX }}coverage.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Visible, never blocking: the gate does not need this job.
+  test-experimental:
+    name: test-experimental (${{ matrix.python }})
+    needs: versions
+    if: ${{ needs.versions.outputs.experimental != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(needs.versions.outputs.experimental) }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      SRC_DIR: ${{ inputs.src-dir }}
+      TEST_DIR: ${{ inputs.test-dir }}
+      PYTHON_VERSION: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # uv does not read 3.N-dev, so setup-python installs the interpreter,
+      # prereleases included, and uv is handed its path.
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+
+      - name: Report an unavailable version
+        if: ${{ failure() && steps.python.outcome == 'failure' }}
+        run: echo "::warning title=Python ${PYTHON_VERSION} is not available::The runner cannot install it yet; this experimental leg does not block the gate."
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: true
+          cache-dependency-glob: ${{ env.PROJECT_PREFIX }}uv.lock
+          cache-suffix: python-${{ matrix.python }}
+
+      - name: Install the locked environment
+        env:
+          PYTHON_PATH: ${{ steps.python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          if ! uv sync --locked --python "${PYTHON_PATH}"; then
+            echo "::error title=No locked environment for Python ${PYTHON_VERSION}::uv.lock or requires-python does not cover it; widen requires-python and run 'uv lock', or drop it from python-versions-experimental."
+            exit 1
+          fi
+
+      - name: Run the test suite with coverage
+        env:
+          PYTHON_PATH: ${{ steps.python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          uv run --locked --python "${PYTHON_PATH}" --with "pytest-cov==7.1.0" pytest "${TEST_DIR}" \
+            --cov="${SRC_DIR}" \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=xml:coverage.xml \
+            --cov-report=json:coverage.json \
+            --junitxml=junit.xml -o junit_family=legacy
+
+      - name: Store test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-${{ matrix.python }}
           path: |
             ${{ env.PROJECT_PREFIX }}junit.xml
             ${{ env.PROJECT_PREFIX }}coverage.xml
@@ -630,7 +828,9 @@ jobs:
 
   gate:
     name: gate
-    needs: [lint, test, report, sonar, dependencies, image, branch]
+    # versions is needed so an invalid list, which only skips test, still fails
+    # the gate; test-experimental is left out on purpose.
+    needs: [versions, lint, test, report, sonar, dependencies, image, branch]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

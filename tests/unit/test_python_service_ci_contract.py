@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import workflow_steps as wf
 import yaml
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "python-service-ci.yml"
@@ -132,7 +134,7 @@ class TestSupplyChain:
 class TestGate:
     def test_the_gate_waits_for_every_other_job(self) -> None:
         gate = _jobs()["gate"]
-        assert set(gate["needs"]) == set(_jobs()) - {"gate"}
+        assert set(gate["needs"]) == set(_jobs()) - {"gate", "test-experimental"}
         assert gate["if"] == "${{ always() }}"
 
     def test_a_failed_or_cancelled_job_fails_the_gate(self) -> None:
@@ -160,8 +162,20 @@ QUALITY_REPORT = (
 )
 PROJECT_PREFIX = "${{ env.PROJECT_PREFIX }}"
 WORKING_DIRECTORY = "${{ inputs.working-directory }}"
-JOBS = ["lint", "test", "report", "sonar", "dependencies", "image", "branch", "gate"]
-PROJECT_JOBS = {"lint", "test", "dependencies"}
+JOBS = [
+    "versions",
+    "lint",
+    "test",
+    "test-experimental",
+    "report",
+    "sonar",
+    "dependencies",
+    "image",
+    "branch",
+    "gate",
+]
+GATED = [job for job in JOBS if job not in ("test-experimental", "gate")]
+PROJECT_JOBS = {"lint", "test", "test-experimental", "dependencies"}
 
 
 def _step(job: str, predicate: str) -> dict[str, Any]:
@@ -204,6 +218,8 @@ class TestDefaultsAreUnchanged:
             ("semantic-branch-config", "string", ""),
             ("sonar-blocking", "boolean", True),
             ("codecov-flag", "string", ""),
+            ("python-versions", "string", ""),
+            ("python-versions-experimental", "string", ""),
         ],
     )
     def test_the_new_inputs_are_optional(self, name: str, kind: str, default: object) -> None:
@@ -214,7 +230,7 @@ class TestDefaultsAreUnchanged:
 
     def test_the_jobs_are_the_same(self) -> None:
         assert list(_jobs()) == JOBS
-        assert _jobs()["gate"]["needs"] == JOBS[:-1]
+        assert _jobs()["gate"]["needs"] == GATED
 
     def test_the_default_working_directory_adds_no_prefix(self) -> None:
         assert _workflow()["env"]["PROJECT_PREFIX"] == (
@@ -239,12 +255,15 @@ class TestMonorepo:
         assert setups
         assert all(s["with"]["cache-dependency-glob"] == f"{PROJECT_PREFIX}uv.lock" for s in setups)
 
-    def test_test_results_are_uploaded_from_the_project(self) -> None:
-        upload = _step("test", "upload-artifact")
-        paths = cast(str, upload["with"]["path"]).splitlines()
-        assert paths == [
-            f"{PROJECT_PREFIX}{name}" for name in ("junit.xml", "coverage.xml", "coverage.json")
-        ]
+    @pytest.mark.parametrize("job", ["test", "test-experimental"])
+    def test_test_results_are_uploaded_from_the_project(self, job: str) -> None:
+        uploads = [s for s in _steps(job) if "upload-artifact" in str(s.get("uses"))]
+        assert uploads
+        for upload in uploads:
+            paths = cast(str, upload["with"]["path"]).splitlines()
+            assert paths == [
+                f"{PROJECT_PREFIX}{name}" for name in ("junit.xml", "coverage.xml", "coverage.json")
+            ]
 
     @pytest.mark.parametrize("job", ["report", "sonar"])
     def test_test_results_are_downloaded_into_the_project(self, job: str) -> None:
@@ -403,3 +422,155 @@ def test_the_builder_is_the_image_release_builder() -> None:
     assert re.fullmatch(
         r"image=moby/buildkit@sha256:[0-9a-f]{64}", cast(str, buildx[0]["with"]["driver-opts"])
     )
+
+
+class TestPythonVersions:
+    """``versions`` normalises the lists; ``test`` and ``test-experimental`` run them."""
+
+    STEP = "Normalise the Python versions"
+    PRIMARY = "needs.versions.outputs.primary"
+
+    def _normalise(
+        self, tmp_path: Path, versions: str = "", experimental: str = "", primary: str = "3.12"
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+        outputs = tmp_path / "outputs.txt"
+        outputs.touch()
+        completed = wf.run(
+            "python-service-ci",
+            "versions",
+            self.STEP,
+            {
+                "PYTHON_VERSION": primary,
+                "PYTHON_VERSIONS": versions,
+                "PYTHON_VERSIONS_EXPERIMENTAL": experimental,
+                "GITHUB_OUTPUT": str(outputs),
+            },
+            tmp_path,
+        )
+        lines = outputs.read_text(encoding="utf-8").splitlines()
+        return completed, dict(line.split("=", 1) for line in lines)
+
+    def test_default_is_the_primary_version_only(self, tmp_path: Path) -> None:
+        """SC-001: with no new input there is one ``test`` leg, on the primary, whose
+        results keep the name ``report`` and ``sonar`` read, and no experimental leg."""
+        completed, outputs = self._normalise(tmp_path)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert outputs == {"primary": "3.12", "required": '["3.12"]', "experimental": "[]"}
+        experimental = _jobs()["test-experimental"]
+        assert experimental["if"] == "${{ needs.versions.outputs.experimental != '[]' }}"
+        alias = next(s for s in _steps("test") if s.get("with", {}).get("name") == "test-results")
+        assert alias["if"] == f"${{{{ !cancelled() && matrix.python == {self.PRIMARY} }}}}"
+        for job in ("report", "sonar"):
+            assert _step(job, "download-artifact")["with"]["name"] == "test-results"
+
+    @pytest.mark.parametrize(
+        ("versions", "experimental", "required", "kept"),
+        [
+            ('["3.13", "3.12", "3.13"]', "", ["3.13", "3.12"], []),
+            ('["3.13"]', "", ["3.13", "3.12"], []),
+            ("[]", "", ["3.12"], []),
+            ('["3.12","3.14"]', '["3.14", "3.15-dev", "3.15-dev"]', ["3.12", "3.14"], ["3.15-dev"]),
+            ("", '["3.12"]', ["3.12"], []),
+        ],
+    )
+    def test_duplicates_are_removed_and_primary_added(
+        self,
+        tmp_path: Path,
+        versions: str,
+        experimental: str,
+        required: list[str],
+        kept: list[str],
+    ) -> None:
+        completed, outputs = self._normalise(tmp_path, versions, experimental)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        assert json.loads(outputs["required"]) == required
+        assert json.loads(outputs["experimental"]) == kept
+
+    @pytest.mark.parametrize(
+        ("versions", "experimental", "name", "bad"),
+        [
+            ('["3.x"]', "", "python-versions", "3.x"),
+            ('["3.12", "3.15-dev"]', "", "python-versions", "3.15-dev"),
+            ("[3.10]", "", "python-versions", "3.1"),
+            ("3.12,3.14", "", "python-versions", "3.12,3.14"),
+            ('{"python": "3.12"}', "", "python-versions", '{"python": "3.12"}'),
+            ("", '["3.15-rc"]', "python-versions-experimental", "3.15-rc"),
+        ],
+    )
+    def test_invalid_list_names_the_bad_value(
+        self, tmp_path: Path, versions: str, experimental: str, name: str, bad: str
+    ) -> None:
+        completed, outputs = self._normalise(tmp_path, versions, experimental)
+        assert completed.returncode == 1
+        assert f"::error title=Invalid {name}::{bad}: " in completed.stdout
+        assert "Traceback" not in completed.stderr
+        assert outputs == {}
+
+    def test_an_invalid_primary_is_named_too(self, tmp_path: Path) -> None:
+        completed, _ = self._normalise(tmp_path, primary="3")
+        assert completed.returncode == 1
+        assert "::error title=Invalid python-version::3: " in completed.stdout
+
+    def test_experimental_never_blocks_the_gate(self) -> None:
+        experimental = _jobs()["test-experimental"]
+        assert experimental["continue-on-error"] is True
+        assert "test-experimental" not in _jobs()["gate"]["needs"]
+        assert {"versions", "test"} <= set(_jobs()["gate"]["needs"])
+        setup = next(s for s in _steps("test-experimental") if s.get("id") == "python")
+        assert setup["with"] == {
+            "python-version": "${{ matrix.python }}",
+            "allow-prereleases": True,
+        }
+
+    @pytest.mark.parametrize(
+        ("job", "source"),
+        [("test", "required"), ("test-experimental", "experimental")],
+    )
+    def test_every_version_is_a_leg_named_after_it(self, job: str, source: str) -> None:
+        declared = _jobs()[job]
+        assert declared["name"] == f"{job} (${{{{ matrix.python }}}})"
+        assert declared["needs"] == "versions"
+        assert declared["strategy"]["fail-fast"] is False
+        assert declared["strategy"]["matrix"] == {
+            "python": f"${{{{ fromJSON(needs.versions.outputs.{source}) }}}}"
+        }
+        setup = _step(job, "astral-sh/setup-uv")
+        assert setup["with"]["cache-suffix"] == "python-${{ matrix.python }}"
+
+    def test_each_leg_installs_the_lock_for_its_version(self) -> None:
+        assert _jobs()["test"]["env"]["PYTHON_VERSION"] == "${{ matrix.python }}"
+        assert _step("test", "astral-sh/setup-uv")["with"]["python-version"] == (
+            "${{ matrix.python }}"
+        )
+        for job, python in (("test", "PYTHON_VERSION"), ("test-experimental", "PYTHON_PATH")):
+            scripts = [cast(str, s["run"]) for s in _steps(job) if "run" in s]
+            assert any(f'uv sync --locked --python "${{{python}}}"' in r for r in scripts), job
+            assert any(f'uv run --locked --python "${{{python}}}"' in r for r in scripts), job
+
+    def test_primary_artifact_keeps_its_name(self) -> None:
+        for job in ("test", "test-experimental"):
+            uploads = [s for s in _steps(job) if "upload-artifact" in str(s.get("uses"))]
+            names = [s["with"]["name"] for s in uploads]
+            assert names[0] == "test-results-${{ matrix.python }}", job
+            assert names[1:] == (["test-results"] if job == "test" else []), job
+
+    def test_the_coverage_threshold_is_only_on_the_primary(self) -> None:
+        assert _jobs()["test"]["env"]["COVERAGE_THRESHOLD"] == (
+            f"${{{{ matrix.python == {self.PRIMARY} && inputs.coverage-threshold || 0 }}}}"
+        )
+        run = next(s for s in _steps("test-experimental") if "pytest" in str(s.get("run", "")))
+        assert "--cov-fail-under" not in cast(str, run["run"])
+
+    def test_inputs_reach_run_only_through_env(self) -> None:
+        step = wf.step("python-service-ci", "versions", self.STEP)
+        assert step["env"] == {
+            "PYTHON_VERSION": "${{ inputs.python-version }}",
+            "PYTHON_VERSIONS": "${{ inputs.python-versions }}",
+            "PYTHON_VERSIONS_EXPERIMENTAL": "${{ inputs.python-versions-experimental }}",
+        }
+        for job in ("versions", "test", "test-experimental"):
+            for declared in _steps(job):
+                script = cast(str, declared.get("run", ""))
+                assert "${{" not in script, f"{job}: {declared.get('name')}"
+                assert "inputs." not in script, f"{job}: {declared.get('name')}"
+        assert _jobs()["versions"]["permissions"] == {}
