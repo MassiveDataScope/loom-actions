@@ -70,8 +70,10 @@ jobs:
 
 | Job | Runs | Blocks on |
 |---|---|---|
+| `versions` | always | a `python-version` that is not `3.N`, or a `python-versions` or `python-versions-experimental` that is not a JSON array of versions |
 | `lint` | always | `uv sync --locked`, ruff, ruff format, mypy (`typecheck`) |
-| `test` | always | pytest failures, coverage under `coverage-threshold` |
+| `test (<v>)` | once per version in `python-versions` | pytest failures on any version; coverage under `coverage-threshold` on `python-version` |
+| `test-experimental (<v>)` | once per version in `python-versions-experimental` | nothing: failures show but never reach the `gate` |
 | `report` | always | bandit at `fail-on-security`; posts the quality report to the PR and the job summary; uploads to Codecov when `codecov` |
 | `sonar` | `sonar: true` | missing `SONAR_TOKEN` or `sonar-project-key`, scanner failure; neither with `sonar-blocking: false` |
 | `dependencies` | `snyk: true` | missing `SNYK_TOKEN`, vulnerable locked runtime dependency (a scanner outage only warns) |
@@ -92,6 +94,48 @@ jobs:
 - `sonar-blocking: false` makes Sonar informative: a scan that fails, or `sonar: true`
   without `SONAR_TOKEN` or `sonar-project-key`, leaves a notice and the `gate` ignores it.
   It is `true` by default, so a Sonar failure blocks as before.
+
+#### Testing on several Python versions
+
+```yaml
+    with:
+      python-version: "3.14"
+      python-versions: '["3.12", "3.14"]'
+      python-versions-experimental: '["3.15-dev"]'
+```
+
+- `python-version` is the primary version: lint, types, the coverage threshold, the quality
+  report, Codecov, Sonar, Snyk and the image run once, on it.
+- `python-versions` is a JSON array of `3.N` strings. Each version is a `test (<v>)` leg,
+  run in parallel with `fail-fast: false`, and the `gate` requires every leg. Duplicates run
+  once and `python-version` is added when missing.
+- `python-versions-experimental` accepts `3.N` and `3.N-dev`, installed with prereleases
+  allowed. Its `test-experimental (<v>)` legs show their failures without blocking; a
+  version the runner cannot install yet leaves a warning.
+- A list that is not a JSON array of versions fails `versions`, naming the value, before any
+  test runs. A version the lock does not cover (`requires-python`, `uv.lock`) fails its leg
+  and says so: widen `requires-python`, run `uv lock` and commit it.
+- Each leg installs the lock for its version (`uv sync --locked --python <v>`), keys the uv
+  cache on it and uploads `test-results-<v>`. The primary also uploads `test-results`, the
+  artifact `report` and `sonar` read.
+- To test on one version only, omit `python-versions` or pass `'["3.14"]'`. With neither new
+  input the run is the one before, except that `test` is shown as `test (<python-version>)`
+  and `versions` appears: the same results under the same artifact names.
+- Adding or removing a version is a one-line change to the list.
+
+To reproduce a leg locally, run the tests with that interpreter; uv fetches it when it is
+missing and nothing else is needed:
+
+```sh
+uv run --locked --python 3.12 pytest
+uv run --locked --python 3.14 pytest
+```
+
+The matrix is not delegated to tox or nox: GitHub runs each version as its own job, in
+parallel and with its own check, so the failing version is named on the pull request. A
+runner of versions inside one job would run them one after another, duplicate the list the
+workflow already holds and hide which version failed behind a single check. tox or nox
+remain an option for a local loop.
 
 #### A service in a monorepo
 
@@ -469,7 +513,10 @@ make act-smoke
 make act-monorepo
 ```
 
-`make act-monorepo` runs `python-service-ci` over [`examples/monorepo`](examples/monorepo).
+`make act-monorepo` runs `python-service-ci` over [`examples/monorepo`](examples/monorepo),
+on its `python-version` alone; `PYTHON_VERSIONS='["3.12","3.14"]' make act-monorepo` passes
+that list as `python-versions`, so `test (3.12)` and `test (3.14)` run and `report` reads
+the primary's results.
 act's artifact server only implements the protocol of `upload-artifact` and
 `download-artifact` v4, so the target runs a throwaway copy of the checkout in which those
 two pins are v4; every other step runs as on GitHub.
