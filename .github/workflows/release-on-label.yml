@@ -43,13 +43,33 @@ on:
         required: false
         type: string
         default: ""
+      package-dir:
+        description: >-
+          Directory of the package to build, relative to the repository root and without a
+          trailing slash; it holds pyproject.toml and uv.lock. The lock check, the build and
+          the wheel name check run there. Defaults to the root itself
+        required: false
+        type: string
+        default: "."
+      semantic-branch-config:
+        description: >-
+          TOML file declaring [tool.semantic_branch] that decides the version, relative to
+          the repository root. A monorepo passes the pyproject.toml of the package it releases
+        required: false
+        type: string
+        default: "pyproject.toml"
+      check-distribution:
+        description: "Check the built distributions with twine check --strict before storing them"
+        required: false
+        type: boolean
+        default: false
     outputs:
       version:
         description: "Version the release published"
         value: ${{ jobs.plan.outputs.version }}
       distribution-built:
         description: "Whether a distribution was built and left as an artifact"
-        value: ${{ jobs.build.result == 'success' }}
+        value: ${{ jobs.build.outputs.built == 'true' }}
 
 jobs:
   plan:
@@ -95,16 +115,18 @@ jobs:
           echo "build-distribution needs package-name to check the built version against the tag."
           exit 1
 
-      # Tracks the floating major tag, not master: a reusable workflow cannot use
-      # a path-relative action, and the caller's SHA pin would otherwise mean
-      # nothing while this reference moved on every push.
+      # Pinned by the commit of a release, not by the floating major tag: a
+      # reusable workflow cannot use a path-relative action, and the caller's SHA
+      # pin would otherwise mean nothing while this reference moved with every
+      # release. The composite at this commit is the one in this tree.
       - name: Plan the release
         id: plan
-        uses: the-reacher-data/loom-actions/actions/release/plan-release@v1
+        uses: the-reacher-data/loom-actions/actions/release/plan-release@f18400c1b3dfb7b125b110293f5631f45e99855d # v1.5.0
         with:
           merge-sha: ${{ env.MERGE_SHA }}
           repository-slug: ${{ github.repository }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          semantic-branch-config: ${{ inputs.semantic-branch-config }}
 
       - name: Store release notes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -149,6 +171,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      built: ${{ steps.built.outputs.built }}
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       PACKAGE_NAME: ${{ inputs.package-name }}
@@ -172,6 +196,7 @@ jobs:
 
       - name: Build package
         shell: bash
+        working-directory: ${{ inputs.package-dir }}
         run: |
           set -euo pipefail
           uv lock --check
@@ -186,6 +211,7 @@ jobs:
       # publishing it would burn a version on an immutable index.
       - name: Require the built version to match the tag
         shell: bash
+        working-directory: ${{ inputs.package-dir }}
         run: |
           set -euo pipefail
           normalised="${PACKAGE_NAME//-/_}"
@@ -195,13 +221,34 @@ jobs:
             exit 1
           fi
 
+      - name: Check the distributions
+        if: ${{ inputs.check-distribution }}
+        shell: bash
+        working-directory: ${{ inputs.package-dir }}
+        env:
+          TWINE_VERSION: "7.0.0"
+        run: |
+          set -euo pipefail
+          uv tool run --from "twine==${TWINE_VERSION}" twine check --strict dist/*
+
+      # upload-artifact does not honour working-directory; the root package keeps
+      # the path it always had.
       - name: Store distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: distributions
-          path: dist/
+          path: ${{ inputs.package-dir == '.' && 'dist/' || format('{0}/dist/', inputs.package-dir) }}
           if-no-files-found: error
           retention-days: 1
+
+      # The last step, so it only reports a distribution once every check passed
+      # and the artifact exists.
+      - name: Report the distribution
+        id: built
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "built=true" >> "$GITHUB_OUTPUT"
 
   release:
     needs: [plan, build]

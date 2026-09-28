@@ -67,8 +67,15 @@ runs:
       id: checks
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      # Inputs reach the scripts through the environment, never through an
+      # expression in the script text, and each check reads them from its own
+      # shell, so a value is never parsed as shell by either.
       env:
         TEST_RESULTS_DIR: ${{ inputs.test-results-dir }}
+        SRC_DIR: ${{ inputs.src-dir }}
+        TEST_DIR: ${{ inputs.test-dir }}
+        INCLUDE_SECURITY: ${{ inputs.include-security }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
 
@@ -102,8 +109,8 @@ runs:
           return 0
         }
 
-        run_check "ruff" "uv run $FROZEN --with-requirements '${{ github.action_path }}/requirements.txt' ruff check '${{ inputs.src-dir }}' --output-format json > ruff.json" "ruff.json"
-        run_check "pyright" "uv run $FROZEN --with-requirements '${{ github.action_path }}/requirements.txt' pyright '${{ inputs.src-dir }}' --outputjson > pyright.json" "pyright.json"
+        run_check "ruff" "uv run $FROZEN --with-requirements \"\${ACTION_PATH}/requirements.txt\" ruff check \"\${SRC_DIR}\" --output-format json > ruff.json" "ruff.json"
+        run_check "pyright" "uv run $FROZEN --with-requirements \"\${ACTION_PATH}/requirements.txt\" pyright \"\${SRC_DIR}\" --outputjson > pyright.json" "pyright.json"
 
         # Test results the caller already produced are reported as they are. The
         # report still blocks on a failed test or on coverage under the
@@ -125,11 +132,11 @@ runs:
             "pytest" "test results supplied by the caller" "0" "reused" \
             "junit.xml,coverage.json,coverage.xml" >> command_status.tsv
         else
-          run_check "pytest" "PYTHONPATH='${{ inputs.src-dir }}:'${PYTHONPATH:-} uv run $FROZEN --with-requirements '${{ github.action_path }}/requirements.txt' pytest '${{ inputs.test-dir }}' --cov='${{ inputs.src-dir }}' --cov-report=json:coverage.json --cov-report=xml:coverage.xml --junit-xml=junit.xml -o junit_family=legacy -v --tb=short" "junit.xml,coverage.json,coverage.xml"
+          run_check "pytest" "PYTHONPATH=\"\${SRC_DIR}:\${PYTHONPATH:-}\" uv run $FROZEN --with-requirements \"\${ACTION_PATH}/requirements.txt\" pytest \"\${TEST_DIR}\" --cov=\"\${SRC_DIR}\" --cov-report=json:coverage.json --cov-report=xml:coverage.xml --junit-xml=junit.xml -o junit_family=legacy -v --tb=short" "junit.xml,coverage.json,coverage.xml"
         fi
 
-        if [ "${{ inputs.include-security }}" = "true" ]; then
-          run_check "bandit" "uv run $FROZEN --with-requirements '${{ github.action_path }}/requirements.txt' bandit -r '${{ inputs.src-dir }}' -f json -o bandit.json" "bandit.json"
+        if [ "${INCLUDE_SECURITY}" = "true" ]; then
+          run_check "bandit" "uv run $FROZEN --with-requirements \"\${ACTION_PATH}/requirements.txt\" bandit -r \"\${SRC_DIR}\" -f json -o bandit.json" "bandit.json"
         else
           echo '{"results":[]}' > bandit.json
           printf '%s\t%s\t%s\t%s\t%s\n' "bandit" "skipped" "0" "skipped" "bandit.json" >> command_status.tsv
@@ -141,6 +148,10 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
+        FAIL_ON_QUALITY: ${{ inputs.fail-on-quality }}
+        FAIL_ON_SECURITY: ${{ inputs.fail-on-security }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
 
@@ -157,18 +168,18 @@ runs:
         if [ -f uv.lock ]; then
           FROZEN="--frozen"
         fi
-        uv run $FROZEN --with-requirements "${{ github.action_path }}/requirements.txt" \
-          python "${{ github.action_path }}/src/builder.py" \
+        uv run $FROZEN --with-requirements "${ACTION_PATH}/requirements.txt" \
+          python "${ACTION_PATH}/src/builder.py" \
             --ruff ruff.json \
             --pyright pyright.json \
             --junit junit.xml \
             --coverage coverage.json \
             --bandit bandit.json \
             --commands command_status.tsv \
-            --template "${{ github.action_path }}/src/templates/report.md.j2" \
+            --template "${ACTION_PATH}/src/templates/report.md.j2" \
             --output quality_report.md \
             --summary quality_summary.json \
             --outputs "$GITHUB_OUTPUT" \
-            --coverage-threshold "${{ inputs.coverage-threshold }}" \
-            --fail-on-quality "${{ inputs.fail-on-quality }}" \
-            --fail-on-security "${{ inputs.fail-on-security }}"
+            --coverage-threshold "${COVERAGE_THRESHOLD}" \
+            --fail-on-quality "${FAIL_ON_QUALITY}" \
+            --fail-on-security "${FAIL_ON_SECURITY}"

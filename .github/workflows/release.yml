@@ -42,10 +42,12 @@ jobs:
             IS_RELEASE_BRANCH="false"
             RELEASE_VERSION=""
           fi
-          echo "branch=${PR_HEAD_REF}" >> "$GITHUB_OUTPUT"
-          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "is_release_branch=${IS_RELEASE_BRANCH}" >> "$GITHUB_OUTPUT"
-          echo "release_version=${RELEASE_VERSION}" >> "$GITHUB_OUTPUT"
+          {
+            echo "branch=${PR_HEAD_REF}"
+            echo "pr_number=${PR_NUMBER}"
+            echo "is_release_branch=${IS_RELEASE_BRANCH}"
+            echo "release_version=${RELEASE_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
   prepare-release-pr:
     runs-on: ubuntu-latest

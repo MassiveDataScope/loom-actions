@@ -1,5 +1,6 @@
-# The release of plan §5 after review round 3; only the image job calls a
-# workflow added with it.
+# The release of plan §5 after review round 3: a package in apps/api released
+# with its own rules, its image, and the upload to PyPI, which trusted
+# publishing only accepts from the caller's own workflow file.
 name: release
 
 on:
@@ -26,7 +27,11 @@ jobs:
     with:
       build-distribution: true
       package-name: acme-api
+      package-dir: apps/api
+      semantic-branch-config: apps/api/pyproject.toml
+      check-distribution: true
       python-version: "3.12"
+      merge-sha: ${{ inputs.merge_sha || '' }}
 
   image:
     needs: release
@@ -47,3 +52,19 @@ jobs:
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  publish:
+    needs: release
+    if: ${{ needs.release.outputs.distribution-built == 'true' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@0000000000000000000000000000000000000000
+        with:
+          skip-existing: true

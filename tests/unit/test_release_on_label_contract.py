@@ -26,6 +26,12 @@ def _inputs() -> dict[str, Any]:
     return cast(dict[str, Any], triggers["workflow_call"]["inputs"])
 
 
+def _outputs() -> dict[str, Any]:
+    workflow = cast(dict[Any, Any], _workflow())
+    triggers = cast(dict[str, Any], workflow.get("on", workflow.get(True)))
+    return cast(dict[str, Any], triggers["workflow_call"]["outputs"])
+
+
 def _job(name: str) -> dict[str, Any]:
     return cast(dict[str, Any], cast(dict[str, Any], _workflow()["jobs"])[name])
 
@@ -56,7 +62,9 @@ class TestBuildingIsOptIn:
         assert "if" not in release[0]
 
     def test_building_without_a_package_name_fails_closed(self) -> None:
-        guard = [s for s in _steps("plan") if s.get("name") == "Require a package name when building"]
+        guard = [
+            s for s in _steps("plan") if s.get("name") == "Require a package name when building"
+        ]
         assert len(guard) == 1
         assert guard[0]["if"] == "${{ inputs.build-distribution && inputs.package-name == '' }}"
 
@@ -111,8 +119,13 @@ class TestWhatACallerCanRelyOn:
         assert revision != "master"
 
     def test_a_caller_learns_whether_a_distribution_exists(self) -> None:
-        workflow = cast(dict[Any, Any], _workflow())
-        triggers = cast(dict[str, Any], workflow.get("on", workflow.get(True)))
-        outputs = cast(dict[str, Any], triggers["workflow_call"]["outputs"])
-        assert "jobs.build.result" in cast(str, outputs["distribution-built"]["value"])
+        """True only when the build job reached its last step: every check passed
+        and the artifact was stored. A skipped build leaves the output empty."""
+        outputs = _outputs()
+        assert outputs["distribution-built"]["value"] == "${{ jobs.build.outputs.built == 'true' }}"
+        assert _job("build")["outputs"]["built"] == "${{ steps.built.outputs.built }}"
+        last = _steps("build")[-1]
+        assert last["id"] == "built"
+        assert "if" not in last
+        assert last["run"].strip().endswith('echo "built=true" >> "$GITHUB_OUTPUT"')
         assert "jobs.plan.outputs.version" in cast(str, outputs["version"]["value"])

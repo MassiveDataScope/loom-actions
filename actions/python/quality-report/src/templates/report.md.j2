@@ -26,7 +26,7 @@
 | Tool | Result | Exit code |
 |---|---|---:|
 {% for c in command_results -%}
-| `{{ c.name }}` | {{ "✅ pass" if c.status == "pass" else ("⏭ skipped" if c.status == "skipped" else "❌ fail") }} | `{{ c.exit_code }}` |
+| `{{ c.name }}` | {{ "✅ pass" if c.status == "pass" else ("⏭ skipped" if c.status == "skipped" else ("♻️ reused" if c.status == "reused" else "❌ fail")) }} | `{{ c.exit_code }}` |
 {% endfor %}
 
 ---

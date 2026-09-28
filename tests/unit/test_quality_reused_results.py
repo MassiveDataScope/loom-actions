@@ -139,3 +139,25 @@ def test_coverage_below_the_threshold_in_supplied_results_still_blocks(tmp_path:
     assert result.returncode == 1
     assert summary["gates"]["quality_blocking"] is True
     assert summary["summary"]["coverage"] == 41.0
+
+
+def _tool_row(tmp_path: Path, tool: str) -> str:
+    report = (tmp_path / "quality_report.md").read_text(encoding="utf-8")
+    return next(line for line in report.splitlines() if line.startswith(f"| `{tool}` |"))
+
+
+def test_supplied_results_are_shown_as_reused_not_failed(tmp_path: Path) -> None:
+    _run_builder(tmp_path, PASSING_JUNIT, COVERED_JSON)
+
+    row = _tool_row(tmp_path, "pytest")
+    assert "reused" in row
+    assert "fail" not in row
+
+
+def test_a_failed_test_in_supplied_results_is_shown_in_the_gate(tmp_path: Path) -> None:
+    """The row says where the results came from; the verdict is the gate's."""
+    _run_builder(tmp_path, FAILING_JUNIT, COVERED_JSON)
+
+    report = (tmp_path / "quality_report.md").read_text(encoding="utf-8")
+    assert "| Quality gate | ❌ fail |" in report
+    assert "reused" in _tool_row(tmp_path, "pytest")

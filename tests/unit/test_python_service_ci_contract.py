@@ -203,6 +203,7 @@ class TestDefaultsAreUnchanged:
             ("working-directory", "string", "."),
             ("semantic-branch-config", "string", ""),
             ("sonar-blocking", "boolean", True),
+            ("codecov-flag", "string", ""),
         ],
     )
     def test_the_new_inputs_are_optional(self, name: str, kind: str, default: object) -> None:
@@ -264,6 +265,12 @@ class TestMonorepo:
         for step in codecov:
             name = cast(str, step["with"]["files"]).rsplit("}}", 1)[1]
             assert f"hashFiles(format('{{0}}{name}', env.PROJECT_PREFIX))" in cast(str, step["if"])
+
+    def test_both_codecov_uploads_carry_the_callers_flag(self) -> None:
+        """An empty flag is what codecov-action gets when none is passed: its
+        ``flags`` input has no default."""
+        codecov = [s for s in _steps("report") if "codecov" in str(s.get("uses", "")).lower()]
+        assert [s["with"]["flags"] for s in codecov] == ["${{ inputs.codecov-flag }}"] * 2
 
     def test_sonar_scans_from_the_root_with_prefixed_paths(self) -> None:
         args = cast(str, _step("sonar", "sonarqube-scan-action")["with"]["args"])
@@ -378,3 +385,21 @@ class TestSonarBlocking:
         assert written == ([] if ready is None else [f"ready={ready}"])
         if ready == "false":
             assert "::notice title=SonarQube is on but not configured::" in completed.stdout
+
+
+def test_the_builder_is_the_image_release_builder() -> None:
+    """The image job builds the caller's Dockerfile; its BuildKit is pinned by
+    the same digest image-release publishes with."""
+    release = yaml.safe_load((WORKFLOW.parent / "image-release.yml").read_text(encoding="utf-8"))
+    release_buildx = [
+        s
+        for s in release["jobs"]["image"]["steps"]
+        if "docker/setup-buildx-action" in str(s.get("uses"))
+    ]
+    buildx = [s for s in _steps("image") if "docker/setup-buildx-action" in str(s.get("uses"))]
+    assert len(buildx) == len(release_buildx) == 1
+    assert buildx[0]["uses"] == release_buildx[0]["uses"]
+    assert buildx[0]["with"]["driver-opts"] == release_buildx[0]["with"]["driver-opts"]
+    assert re.fullmatch(
+        r"image=moby/buildkit@sha256:[0-9a-f]{64}", cast(str, buildx[0]["with"]["driver-opts"])
+    )

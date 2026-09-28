@@ -22,13 +22,17 @@ jobs:
     uses: the-reacher-data/loom-actions/.github/workflows/python-service-ci.yml@0000000000000000000000000000000000000000
     with:
       python-version: "3.12"
-      coverage-threshold: 80
+      working-directory: apps/api
+      semantic-branch-config: apps/api/pyproject.toml
+      coverage-threshold: 97
       image-context: .
       dockerfile: Dockerfile
       image-scan-severity: high
       image-smoke-command: "true"
       codecov: true
+      codecov-flag: api
       sonar: ${{ vars.SONAR_ENABLED == 'true' && github.actor != 'dependabot[bot]' }}
+      sonar-blocking: false
       sonar-organization: acme
       sonar-project-key: acme_app
     secrets:

@@ -86,6 +86,9 @@ jobs:
 - A pull request from a fork skips the secret-dependent jobs and the PR comment.
 - Nothing is pushed or deployed. The image uses the `gha` layer cache (`scope=image`), shared
   by pull requests and the trunk, so a later publishing stage can reuse the tested layers.
+  Its BuildKit is pinned by the digest `image-release` uses.
+- `codecov-flag` sets the Codecov flag of both uploads, for a repository that splits its
+  coverage by component. It is empty by default: the uploads carry no flag, as before.
 - `sonar-blocking: false` makes Sonar informative: a scan that fails, or `sonar: true`
   without `SONAR_TOKEN` or `sonar-project-key`, leaves a notice and the `gate` ignores it.
   It is `true` by default, so a Sonar failure blocks as before.
@@ -118,6 +121,61 @@ When the Python project lives in a subdirectory, with its own `pyproject.toml` a
   Codecov with `fixes` in its `codecov.yml`.
 - With the defaults every path is the one used before, and the jobs are the same.
 - [`examples/monorepo`](examples/monorepo) is a runnable caller: `make act-monorepo`.
+
+### release-on-label
+
+Merging a pull request that carries the `release` label plans the version from the branches
+merged since the last tag, creates the immutable tag `vX.Y.Z`, moves the major tag `vX`,
+writes the notes and creates the GitHub Release. With `build-distribution: true` it also
+builds the package at the tag and leaves it as the `distributions` artifact; the caller
+uploads it, because PyPI's trusted publishing does not accept a reusable workflow. See
+[PUBLISHING.md](PUBLISHING.md).
+
+```yaml
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: the-reacher-data/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
+    with:
+      build-distribution: true
+      package-name: periplo
+      package-dir: apps/api
+      semantic-branch-config: apps/api/pyproject.toml
+      check-distribution: true
+      python-version: "3.12"
+      merge-sha: ${{ inputs.merge_sha || '' }}
+```
+
+| Input | Default | Effect |
+|---|---|---|
+| `release-label` | `release` | label that authorises a release when its pull request merges |
+| `base-branch` | `master` | branch the release commit must be on |
+| `build-distribution` | `false` | build a wheel and an sdist at the tag; needs `package-name` |
+| `package-name` | empty | distribution name; the wheel must be `<name>-<version>-py3-none-any.whl` |
+| `package-dir` | `.` | directory of the package, relative to the root, no trailing slash: `uv lock --check`, the build and the wheel name check run there, and `<package-dir>/dist/` is uploaded |
+| `semantic-branch-config` | `pyproject.toml` | TOML file, relative to the root, whose `[tool.semantic_branch]` decides the version |
+| `check-distribution` | `false` | run `twine check --strict` (twine 7.0.0) on every built distribution before storing it |
+| `python-version`, `uv-version` | `3.11`, `0.10.2` | toolchain of the build |
+| `merge-sha` | empty | commit to release, to resume a run that stopped halfway |
+
+| Output | Value |
+|---|---|
+| `version` | the version released, `X.Y.Z`; empty when nothing was released |
+| `distribution-built` | `true` once the distributions were built, checked and stored; `false` otherwise |
+
+- The planner (`actions/release/plan-release`) is pinned by the commit of a release, so a
+  caller's SHA pin on this workflow also fixes the planner it runs.
+- The build checks out the tag with its full history, so a version read from git (hatch-vcs,
+  setuptools-scm) is the tag's. A wheel with any other version fails the build instead of
+  burning a version on the index.
+- With the defaults, a package at the root is built, checked and uploaded exactly as before.
+- A merge without the label runs nothing: `version` is empty and `distribution-built` is not
+  `true`. Gate the caller's
+  image job on `needs.release.outputs.version != ''` and its upload on
+  `needs.release.outputs.distribution-built == 'true'`.
+- A merge whose branches all belong to `release_ignore` (for example `dependabot/.*`) fails
+  the plan with "nothing to release": no tag, no image, no upload.
 
 ### Monorepo callers
 
@@ -332,6 +390,11 @@ report over the results rather than a second execution of the same suite.
 
 The gate is unchanged: a failed test and coverage below the threshold still block, because
 both are read from these files rather than from the exit code of a pytest this action ran.
+The tool table shows pytest as `reused`; the quality gate gives the verdict. (From the release
+after this change; `python-service-ci` picks it up once it pins that release.)
+
+Every input reaches the scripts through the environment, never through an expression in the
+script text.
 
 ### Lockfiles
 
@@ -410,6 +473,18 @@ make act-monorepo
 act's artifact server only implements the protocol of `upload-artifact` and
 `download-artifact` v4, so the target runs a throwaway copy of the checkout in which those
 two pins are v4; every other step runs as on GitHub.
+
+`tests/act/run-release.sh <caller checkout> <package-name> [input=value ...]` runs the
+`build` job of `release-on-label` over a throwaway clone of a caller, tagged `v9.9.9`, and
+downloads its distributions as a caller's `publish` job would. The plan and the GitHub
+release need the GitHub API, so the harness stubs the plan and leaves the release out;
+nothing is pushed or published.
+
+```bash
+tests/act/run-release.sh ../loom-py loom-kernel
+tests/act/run-release.sh ../nautilus-ui periplo package-dir=apps/api \
+  semantic-branch-config=apps/api/pyproject.toml check-distribution=true python-version='"3.12"'
+```
 
 ## Repository Workflows
 
