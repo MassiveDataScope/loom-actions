@@ -17,7 +17,7 @@ jobs:
   build:
     permissions:
       contents: read
-    uses: the-reacher-data/loom-actions/.github/workflows/pages.yml@0000000000000000000000000000000000000000
+    uses: MassiveDataScope/loom-actions/.github/workflows/pages.yml@0000000000000000000000000000000000000000
     with:
       deploy: true
       python-version: "3.12"

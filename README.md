@@ -1,10 +1,10 @@
 # loom-actions
 
-[![CI PR](https://github.com/the-reacher-data/loom-actions/actions/workflows/ci-pr.yml/badge.svg)](https://github.com/the-reacher-data/loom-actions/actions/workflows/ci-pr.yml)
-[![CI Main](https://github.com/the-reacher-data/loom-actions/actions/workflows/ci-main.yml/badge.svg?branch=master)](https://github.com/the-reacher-data/loom-actions/actions/workflows/ci-main.yml)
+[![CI PR](https://github.com/MassiveDataScope/loom-actions/actions/workflows/ci-pr.yml/badge.svg)](https://github.com/MassiveDataScope/loom-actions/actions/workflows/ci-pr.yml)
+[![CI Main](https://github.com/MassiveDataScope/loom-actions/actions/workflows/ci-main.yml/badge.svg?branch=master)](https://github.com/MassiveDataScope/loom-actions/actions/workflows/ci-main.yml)
 [![Pyright](https://img.shields.io/badge/Pyright-type%20checked-2b5b84?logo=microsoft&logoColor=white)](https://github.com/microsoft/pyright)
 [![Ruff](https://img.shields.io/badge/Ruff-lint-111111?logo=ruff&logoColor=white)](https://docs.astral.sh/ruff/)
-![License](https://img.shields.io/github/license/the-reacher-data/loom-actions)
+![License](https://img.shields.io/github/license/MassiveDataScope/loom-actions)
 
 Reusable GitHub Actions for Python projects using Trunk-Based Development and Conventional Commits.
 
@@ -58,7 +58,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: the-reacher-data/loom-actions/.github/workflows/python-service-ci.yml@<sha> # vX.Y.Z
+    uses: MassiveDataScope/loom-actions/.github/workflows/python-service-ci.yml@<sha> # vX.Y.Z
     with:
       python-version: "3.13"
       image-smoke-command: python -c "import app.main"
@@ -175,7 +175,7 @@ jobs:
   release:
     permissions:
       contents: write
-    uses: the-reacher-data/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
+    uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
     with:
       build-distribution: true
       package-name: periplo
@@ -246,7 +246,7 @@ title or body, or any other text a contributor controls.
   node:
     permissions:
       contents: read
-    uses: the-reacher-data/loom-actions/.github/workflows/node-ci.yml@<sha> # vX.Y.Z
+    uses: MassiveDataScope/loom-actions/.github/workflows/node-ci.yml@<sha> # vX.Y.Z
     with:
       node-version: "22"
       workspaces: "@acme/core acme-web"
@@ -285,7 +285,7 @@ title or body, or any other text a contributor controls.
       security-events: write
       pull-requests: write
       actions: read
-    uses: the-reacher-data/loom-actions/.github/workflows/repo-security.yml@<sha> # vX.Y.Z
+    uses: MassiveDataScope/loom-actions/.github/workflows/repo-security.yml@<sha> # vX.Y.Z
     with:
       gitleaks-config: .gitleaks.toml
       codeql-languages: "python,javascript-typescript"
@@ -318,7 +318,7 @@ title or body, or any other text a contributor controls.
   docs:
     permissions:
       contents: read
-    uses: the-reacher-data/loom-actions/.github/workflows/pages.yml@<sha> # vX.Y.Z
+    uses: MassiveDataScope/loom-actions/.github/workflows/pages.yml@<sha> # vX.Y.Z
     with:
       deploy: true
       python-version: "3.12"
@@ -363,7 +363,7 @@ title or body, or any other text a contributor controls.
       packages: write
       id-token: write
       attestations: write
-    uses: the-reacher-data/loom-actions/.github/workflows/image-release.yml@<sha> # vX.Y.Z
+    uses: MassiveDataScope/loom-actions/.github/workflows/image-release.yml@<sha> # vX.Y.Z
     with:
       version: ${{ needs.release.outputs.version }}
       expected-sha: ${{ github.event.pull_request.merge_commit_sha || inputs.merge_sha }}
@@ -393,7 +393,7 @@ title or body, or any other text a contributor controls.
   another commit of the default branch; `expected-sha` covers that for the caller that passes it.
 - In a public repository the digest gets a build provenance attestation pushed to the
   registry (`gh attestation verify oci://ghcr.io/acme/app:X.Y.Z --repo <owner>/<repo>
-  --signer-repo the-reacher-data/loom-actions`); in a private one, a notice. No storage record
+  --signer-repo MassiveDataScope/loom-actions`); in a private one, a notice. No storage record
   is created, so `artifact-metadata: write` is not needed.
 
 ## Quality Budgets
@@ -463,7 +463,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Quality report
-        uses: the-reacher-data/loom-actions/actions/python/quality-report@v1
+        uses: MassiveDataScope/loom-actions/actions/python/quality-report@v1
         with:
           src-dir: src
           test-dir: tests
@@ -478,13 +478,13 @@ jobs:
 ```yaml
 - name: Compute version
   id: version
-  uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@v1
+  uses: MassiveDataScope/loom-actions/actions/release/versioning-branch-semantic@v1
   with:
     branch: feature/my-change
     prerelease: "false"
 
 - name: Generate changelog
-  uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@v1
+  uses: MassiveDataScope/loom-actions/actions/release/changelog-conventional-commit@v1
   with:
     mode: release
     branch: feature/my-change
@@ -545,8 +545,8 @@ tests/act/run-release.sh ../nautilus-ui periplo package-dir=apps/api \
   - Immutable release tag: `vX.Y.Z` (for pinning exact versions)
   - Moving major tag: `vX` (updated on each compatible minor/patch release)
 - Intended external consumption pattern:
-  - `the-reacher-data/loom-actions/actions/python/quality-report@v1`
-  - `the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@v1`
+  - `MassiveDataScope/loom-actions/actions/python/quality-report@v1`
+  - `MassiveDataScope/loom-actions/actions/release/versioning-branch-semantic@v1`
 - Keep major tags (`v1`, `v2`) stable and move them only on compatible releases.
 
 ## Repository Settings

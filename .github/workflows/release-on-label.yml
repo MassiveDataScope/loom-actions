@@ -121,7 +121,7 @@ jobs:
       # release. The composite at this commit is the one in this tree.
       - name: Plan the release
         id: plan
-        uses: the-reacher-data/loom-actions/actions/release/plan-release@f18400c1b3dfb7b125b110293f5631f45e99855d # v1.5.0
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release@f18400c1b3dfb7b125b110293f5631f45e99855d # v1.5.0
         with:
           merge-sha: ${{ env.MERGE_SHA }}
           repository-slug: ${{ github.repository }}

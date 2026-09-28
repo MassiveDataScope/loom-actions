@@ -23,7 +23,7 @@ jobs:
   release:
     permissions:
       contents: write
-    uses: the-reacher-data/loom-actions/.github/workflows/release-on-label.yml@0000000000000000000000000000000000000000
+    uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@0000000000000000000000000000000000000000
     with:
       build-distribution: true
       package-name: acme-api
@@ -41,7 +41,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    uses: the-reacher-data/loom-actions/.github/workflows/image-release.yml@0000000000000000000000000000000000000000
+    uses: MassiveDataScope/loom-actions/.github/workflows/image-release.yml@0000000000000000000000000000000000000000
     with:
       version: ${{ needs.release.outputs.version }}
       expected-sha: ${{ github.event.pull_request.merge_commit_sha || inputs.merge_sha }}
