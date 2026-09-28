@@ -826,7 +826,7 @@ jobs:
 
   gate:
     name: gate
-    # test-experimental is not required.
+    # An invalid version list fails versions and only skips test; test-experimental is not listed.
     needs: [versions, lint, test, report, sonar, dependencies, image, branch]
     if: ${{ always() }}
     runs-on: ubuntu-latest

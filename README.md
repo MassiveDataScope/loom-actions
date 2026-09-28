@@ -118,10 +118,9 @@ jobs:
 - Each leg installs the lock for its version (`uv sync --locked --python <v>`), keys the uv
   cache on it and uploads `test-results-<v>`. The primary also uploads `test-results`, the
   artifact `report` and `sonar` read.
-- To test on one version only, omit `python-versions` or pass `'["3.14"]'`. With neither new
-  input the run is the one before, except that `test` is shown as `test (<python-version>)`
-  and `versions` appears: the same results under the same artifact names.
-- Adding or removing a version is a one-line change to the list.
+- To test on one version only, omit `python-versions` or pass `'["3.14"]'`. Without either
+  list, `test` runs once, as `test (<python-version>)`, after `versions`, and uploads
+  `test-results`.
 
 To reproduce a leg locally, run the tests with that interpreter; uv fetches it when it is
 missing and nothing else is needed:
