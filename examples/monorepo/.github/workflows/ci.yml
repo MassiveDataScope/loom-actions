@@ -4,7 +4,7 @@
 # GitHub only runs the workflows of the repository root, so this one runs
 # locally with `make act-monorepo`, against the python-service-ci.yml of this
 # checkout. A real caller pins it instead:
-#   uses: the-reacher-data/loom-actions/.github/workflows/python-service-ci.yml@<sha> # vX.Y.Z
+#   uses: MassiveDataScope/loom-actions/.github/workflows/python-service-ci.yml@<sha> # vX.Y.Z
 name: ci
 
 on:

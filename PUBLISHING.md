@@ -47,7 +47,7 @@ jobs:
   release:
     permissions:
       contents: write
-    uses: the-reacher-data/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
+    uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
     with:
       build-distribution: true
       package-name: periplo
@@ -65,7 +65,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    uses: the-reacher-data/loom-actions/.github/workflows/image-release.yml@<sha> # vX.Y.Z
+    uses: MassiveDataScope/loom-actions/.github/workflows/image-release.yml@<sha> # vX.Y.Z
     with:
       version: ${{ needs.release.outputs.version }}
       expected-sha: ${{ github.event.pull_request.merge_commit_sha || inputs.merge_sha }}
@@ -150,16 +150,16 @@ names both repositories:
 ```bash
 gh attestation verify oci://ghcr.io/<owner>/<image>:X.Y.Z \
   --repo <owner>/<repo> \
-  --signer-repo the-reacher-data/loom-actions
+  --signer-repo MassiveDataScope/loom-actions
 
 gh attestation verify oci://docker.io/<namespace>/<image>:X.Y.Z \
   --repo <owner>/<repo> \
-  --signer-repo the-reacher-data/loom-actions
+  --signer-repo MassiveDataScope/loom-actions
 ```
 
 `--repo` is the caller, whose commit was built; `--signer-repo` is where the signing
 workflow lives. To pin the workflow itself, pass
-`--signer-workflow the-reacher-data/loom-actions/.github/workflows/image-release.yml`
+`--signer-workflow MassiveDataScope/loom-actions/.github/workflows/image-release.yml`
 **instead of** `--signer-repo`: `gh` refuses both at once. `gh` must be logged in
 (`gh auth login`) to read the attestations.
 

@@ -18,7 +18,7 @@ import yaml
 ROOT = Path(__file__).parents[2]
 CALLERS = ROOT / "tests" / "fixtures" / "callers"
 WORKFLOWS = ROOT / ".github" / "workflows"
-PREFIX = "the-reacher-data/loom-actions/.github/workflows/"
+PREFIX = "MassiveDataScope/loom-actions/.github/workflows/"
 LEVEL = {"none": 0, "read": 1, "write": 2}
 
 

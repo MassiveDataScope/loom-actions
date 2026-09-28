@@ -21,7 +21,7 @@ import yaml
 
 ROOT = Path(__file__).parents[2]
 NAME = "release-on-label"
-PLAN_RELEASE = "the-reacher-data/loom-actions/actions/release/plan-release"
+PLAN_RELEASE = "MassiveDataScope/loom-actions/actions/release/plan-release"
 COMPOSITE = "actions/release/plan-release/action.yml"
 PACKAGE_DIR = "${{ inputs.package-dir }}"
 PINNED_LINE = re.compile(

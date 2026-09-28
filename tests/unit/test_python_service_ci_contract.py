@@ -157,7 +157,7 @@ class TestGate:
 
 
 QUALITY_REPORT = (
-    "the-reacher-data/loom-actions/actions/python/quality-report"
+    "MassiveDataScope/loom-actions/actions/python/quality-report"
     "@f4529aa9ac9f5a3d34b864fe12440b29b52377d2"
 )
 PROJECT_PREFIX = "${{ env.PROJECT_PREFIX }}"

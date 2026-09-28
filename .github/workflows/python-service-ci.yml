@@ -473,7 +473,7 @@ jobs:
       - name: Quality report
         id: quality
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/python/quality-report@f4529aa9ac9f5a3d34b864fe12440b29b52377d2 # v1.7.0
+        uses: MassiveDataScope/loom-actions/actions/python/quality-report@f4529aa9ac9f5a3d34b864fe12440b29b52377d2 # v1.7.0
         with:
           working-directory: ${{ inputs.working-directory }}
           src-dir: ${{ inputs.src-dir }}
@@ -492,7 +492,7 @@ jobs:
 
       - name: Comment the report on the pull request
         if: ${{ always() && github.event_name == 'pull_request' && env.SAME_REPOSITORY == 'true' && steps.quality.outputs.report-file != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@017878a375d4728129792fee009296635884b6d3 # v1.2.3
+        uses: MassiveDataScope/loom-actions/actions/core/pr-comment-update@017878a375d4728129792fee009296635884b6d3 # v1.2.3
         with:
           github-token: ${{ github.token }}
           tags: "<!-- loom-quality-report -->"
