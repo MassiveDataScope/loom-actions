@@ -131,11 +131,7 @@ uv run --locked --python 3.12 pytest
 uv run --locked --python 3.14 pytest
 ```
 
-The matrix is not delegated to tox or nox: GitHub runs each version as its own job, in
-parallel and with its own check, so the failing version is named on the pull request. A
-runner of versions inside one job would run them one after another, duplicate the list the
-workflow already holds and hide which version failed behind a single check. tox or nox
-remain an option for a local loop.
+tox or nox remain an option for a local loop.
 
 #### A service in a monorepo
 

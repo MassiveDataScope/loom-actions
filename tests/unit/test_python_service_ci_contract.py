@@ -451,7 +451,7 @@ class TestPythonVersions:
         return completed, dict(line.split("=", 1) for line in lines)
 
     def test_default_is_the_primary_version_only(self, tmp_path: Path) -> None:
-        """SC-001: with no new input there is one ``test`` leg, on the primary, whose
+        """With no new input there is one ``test`` leg, on the primary, whose
         results keep the name ``report`` and ``sonar`` read, and no experimental leg."""
         completed, outputs = self._normalise(tmp_path)
         assert completed.returncode == 0, completed.stdout + completed.stderr
@@ -515,7 +515,7 @@ class TestPythonVersions:
         assert "::error title=Invalid python-version::3.12.8: " in completed.stdout
 
     def test_without_a_matrix_the_primary_is_passed_on_untouched(self, tmp_path: Path) -> None:
-        """SC-001: a caller pinning a patch release keeps running on it."""
+        """A caller pinning a patch release keeps running on it."""
         completed, outputs = self._normalise(tmp_path, primary="3.12.8")
         assert completed.returncode == 0, completed.stdout + completed.stderr
         assert outputs == {"primary": "3.12.8", "required": '["3.12.8"]', "experimental": "[]"}
