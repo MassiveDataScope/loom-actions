@@ -473,7 +473,7 @@ jobs:
       - name: Quality report
         id: quality
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/python/quality-report@90b0ee6af678dfecf92c18a87e2a5f8081644309 # v1.4.0
+        uses: the-reacher-data/loom-actions/actions/python/quality-report@f4529aa9ac9f5a3d34b864fe12440b29b52377d2 # v1.7.0
         with:
           working-directory: ${{ inputs.working-directory }}
           src-dir: ${{ inputs.src-dir }}
