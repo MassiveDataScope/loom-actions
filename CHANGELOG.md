@@ -1,3 +1,134 @@
+# 🚀 Release 1.7.0 ([#44](https://github.com/the-reacher-data/loom-actions/pull/44)) ([`4ed4098`](https://github.com/the-reacher-data/loom-actions/commit/4ed4098e1b5d233e062d500440e309dd3ef1413b))
+
+
+## ✨ Features
+### release-on-label
+- **release-on-label:** release a package in a subdirectory with a pinned planner<br>
+  > A monorepo keeps the package it publishes in a subdirectory with its own
+  > pyproject.toml and uv.lock, and release-on-label only built from the root.
+  > package-dir, "." by default: the lock check, the build and the wheel name
+  > check run there, and the distributions are uploaded from its dist/. The
+  > root package uploads "dist/", the path it always had.
+  > semantic-branch-config, "pyproject.toml" by default like plan-release's
+  > own default, is forwarded to the planner.
+  > check-distribution, off by default: twine 7.0.0 check --strict over every
+  > built distribution before it is stored (it reads Metadata-Version 2.5).
+  > plan-release is pinned by f18400c (v1.5.0), the commit the floating v1 tag
+  > points at, instead of @v1: a caller's SHA pin on this workflow now also
+  > fixes the planner. Its composite is identical at v1.4.0, v1.5.0 and here.
+  > distribution-built reads a job output the last build step sets, instead
+  > of jobs.build.result, which actionlint does not type there. The value is
+  > the same: true once every build step succeeded, false when it was skipped.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+### python-service-ci
+- **python-service-ci:** add codecov-flag and pin the image builder by digest<br>
+  > codecov-flag, empty by default, is passed as flags to both Codecov uploads
+  > so a monorepo can split its coverage by component. codecov-action's flags
+  > input has no default, so an empty flag is what it got before.
+  > The image job's setup-buildx now pins BuildKit by the digest image-release
+  > uses (buildx-stable-1 on 2026-09-25), instead of pulling the floating tag
+  > to build the caller's Dockerfile. A test keeps both workflows on one digest.
+  > The caller fixture passes the monorepo inputs plan §5 gives the API.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### quality-report
+- **quality-report:** pass every input to the checks through the environment<br>
+  > src-dir, test-dir, include-security, coverage-threshold, fail-on-quality,
+  > fail-on-security and the action path were interpolated into the script
+  > text, where GitHub substitutes them before bash parses it. They now reach
+  > both steps as environment variables, and each check, which runs in a login
+  > shell of its own, reads them there, so a value is never parsed as shell.
+  > Every tool gets the arguments it got before, with or without uv.lock; the
+  > command text recorded in command_status.tsv now names the variables
+  > instead of their values. Tests run the step with a recording uv, including
+  > a source directory with spaces, quotes and command substitutions; the act
+  > smoke passes at the root and in a subdirectory.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+- **quality-report:** show supplied test results as reused, not failed<br>
+  > With test-results-dir the pytest row has status "reused", and the tool
+  > table painted anything but pass and skipped as a failure. It now reads
+  > "reused"; whether the tests passed is still the quality gate's verdict,
+  > which reads the supplied files.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+## 📖 Documentation
+- document a monorepo release with PyPI, GHCR, Docker Hub and attestations<br>
+  > PUBLISHING.md now gives the complete caller of a package in a subdirectory:
+  > release-on-label with package-dir, semantic-branch-config and
+  > check-distribution, the image job gated on a version, and the caller's own
+  > publish job gated on distribution-built. It lists what PyPI's trusted
+  > publisher, the pypi environment, GHCR and Docker Hub need, and how to
+  > verify the image attestation with gh attestation verify and
+  > -signer-repo the-reacher-data/loom-actions. A test keeps its caller in
+  > step with the tested fixture.
+  > The README documents release-on-label's inputs and outputs, codecov-flag,
+  > the pinned BuildKit, and the reused pytest row of quality-report.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+### publishing
+- **publishing:** pin the signer workflow instead of the signer repository<br>
+  > gh attestation verify refuses --signer-repo and --signer-workflow together,
+  > so the stricter check replaces the first instead of adding to it. The pypi
+  > environment note no longer names the exact ref of a pull_request run, and
+  > the README says python-service-ci shows the reused row only once it pins
+  > the release that carries it.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+## 🎨 Style
+### release
+- **release:** write the detected metadata in one redirect<br>
+  > actionlint's shellcheck flagged four separate redirects to GITHUB_OUTPUT
+  > (SC2129). They are grouped; the outputs are the same, and a test runs the
+  > step for a release branch, other branches and a hostile branch name.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+
+
+## ✅ Tests
+### callers
+- **callers:** release a monorepo package and upload it from the caller<br>
+  > The release fixture now passes package-dir, semantic-branch-config,
+  > check-distribution and merge-sha as plan §5 and review round 3 give them,
+  > and carries the caller's publish job: environment pypi, id-token only,
+  > gated on distribution-built, skip-existing. New tests pin that neither the
+  > image nor the upload runs when a merge without the label leaves the
+  > release outputs empty.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+### act
+- **act:** run the build of release-on-label over a clone of a caller<br>
+  > tests/act/run-release.sh clones a caller into a temporary directory, tags
+  > it v9.9.9, and runs release-on-label's build job under act with the
+  > caller's inputs, then downloads the distributions as the caller's publish
+  > job does. The plan and the GitHub release need the GitHub API, so the plan
+  > is a stub and the release is left out; the clone has an unreachable
+  > remote, so nothing is pushed or published.
+  > With loom-py's own inputs it builds loom_kernel-9.9.9 as before; with
+  > package-dir apps/api and check-distribution it builds periplo-9.9.9, twine
+  > passes both files, and the artifact holds them at its root.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+
+
+
 # 🚀 Release 1.6.0 ([#42](https://github.com/the-reacher-data/loom-actions/pull/42)) ([`f299351`](https://github.com/the-reacher-data/loom-actions/commit/f299351c56249c774edd991725b6129383ca9561))
 
 
