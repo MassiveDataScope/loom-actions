@@ -1,3 +1,90 @@
+# 🚀 Release 1.8.0 ([#46](https://github.com/the-reacher-data/loom-actions/pull/46)) ([`526652d`](https://github.com/the-reacher-data/loom-actions/commit/526652d2566435b2d0aae7b00270415a50a36e7a))
+
+
+## ✨ Features
+### workflows
+- **workflows:** test python-service-ci on a matrix of Python versions<br>
+  > python-versions and python-versions-experimental take JSON arrays of
+  > versions, empty by default. A new versions job normalises them before
+  > any matrix reads them: an empty list means python-version alone,
+  > duplicates run once, the primary is added when missing and experimental
+  > versions already required are dropped. A value that is not JSON, not an
+  > array of strings or not 3.N (3.N-dev only among the experimental ones)
+  > fails the job with an error naming it.
+  > test becomes test (<v>), one leg per required version with fail-fast
+  > off; each leg installs the lock for its version with uv sync --locked
+  > -python and keys the uv cache on it. test-experimental (<v>) installs
+  > prereleases through setup-python, continues on error and is left out of
+  > the gate, which now needs versions so an invalid list still fails it.
+  > The coverage threshold applies to the primary leg alone.
+  > Every leg uploads test-results-<v>; the primary also uploads
+  > test-results, the artifact report and sonar read, so a caller that sets
+  > none of the new inputs gets the same results under the same names.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### workflows
+- **workflows:** leave python-version unchecked unless a matrix is declared<br>
+  > setup-uv takes any interpreter request, so a caller may pin a patch
+  > release such as 3.12.8. Checking python-version against 3.N on every run
+  > would fail those callers although they set none of the new inputs; it is
+  > now checked only when python-versions or python-versions-experimental is
+  > set, which is when it has to match the list. Without them it is passed
+  > on untouched, as before.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+## 📖 Documentation
+### readme
+- **readme:** document the Python version matrix of python-service-ci<br>
+  > How to declare the versions and the experimental ones, what stays on
+  > the primary, how to pin to one version, the artifacts each leg uploads,
+  > how to reproduce a leg with uv run --python and why the matrix is not
+  > delegated to tox or nox.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+
+## ♻️ Refactor
+### workflows
+- **workflows:** keep comments to what the code does<br>
+  > Trim comments in the L005 diff (python-service-ci.yml, README.md,
+  > examples/monorepo/.github/workflows/ci.yml,
+  > tests/unit/test_python_service_ci_contract.py) that justified design
+  > decisions, referenced spec IDs, or restated history, keeping only the
+  > description of what the code does.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+- **workflows:** keep comments to what the code does<br>
+  > Remove remaining history references in the README and test docstrings,
+  > and restore a non-obvious invariant in the gate comment without its
+  > justification, per the axiom of keeping comments to what the code does.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+
+## ✅ Tests
+### act
+- **act:** run the monorepo example on the versions in PYTHON_VERSIONS<br>
+  > The example caller passes python-versions from the PYTHON_VERSIONS
+  > variable, which run-monorepo.sh sets from the environment variable of
+  > the same name, so make act-monorepo keeps its single leg and
+  > PYTHON_VERSIONS='["3.12","3.14"]' make act-monorepo runs test (3.12)
+  > and test (3.14) and one report. The caller fixture declares a matrix
+  > and an experimental version, so the caller contract test reads both new
+  > inputs.
+  > Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+
+
+
+
+
+
 # 🚀 Release 1.7.0 ([#44](https://github.com/the-reacher-data/loom-actions/pull/44)) ([`4ed4098`](https://github.com/the-reacher-data/loom-actions/commit/4ed4098e1b5d233e062d500440e309dd3ef1413b))
 
 
