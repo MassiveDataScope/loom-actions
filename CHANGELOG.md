@@ -1,3 +1,19 @@
+# 🚀 Release 1.8.1 ([#48](https://github.com/MassiveDataScope/loom-actions/pull/48)) ([`cf2cf11`](https://github.com/MassiveDataScope/loom-actions/commit/cf2cf11f2b09d538250219616f6e85967268d80e))
+
+
+
+
+
+
+
+
+
+## 🛠 Chores
+- reference the repository under MassiveDataScope
+
+
+
+
 # 🚀 Release 1.8.0 ([#46](https://github.com/the-reacher-data/loom-actions/pull/46)) ([`526652d`](https://github.com/the-reacher-data/loom-actions/commit/526652d2566435b2d0aae7b00270415a50a36e7a))
 
 
