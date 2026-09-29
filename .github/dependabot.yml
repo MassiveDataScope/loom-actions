@@ -1,0 +1,23 @@
+# Weekly dependency updates. Dependabot names its branches dependabot/<ecosystem>/..., which
+# [tool.semantic_branch] in pyproject.toml ignores: an update ships with the next feature or
+# fix, never as a release of its own.
+version: 2
+updates:
+  # Reusable workflows and the composite actions under actions/, all pinned by SHA.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /actions/**
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # The Python tools some composite actions install at run time.
+  - package-ecosystem: pip
+    directories:
+      - /actions/python/quality-report
+      - /actions/release/changelog-conventional-commit
+      - /actions/release/versioning-branch-semantic
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
