@@ -44,9 +44,11 @@ major = [
 ]
 prerelease_ignore = [
     "docs/.*",
+    "dependabot/.*",
 ]
 release_ignore = [
     "wip/.*",
     "docs/.*",
     "chore/.*",
+    "dependabot/.*",
 ]
