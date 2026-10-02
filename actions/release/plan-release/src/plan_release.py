@@ -13,8 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, NoReturn
 
-_RELEASE_TAG_GLOB = "v[0-9]*.[0-9]*.[0-9]*"
-_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+from release_tags import (
+    DEFAULT_TAG_PREFIX,
+    TagPrefixError,
+    check_tag_prefix,
+    release_tag_glob,
+    release_tag_pattern,
+)
+
 _PARTS: Final[tuple[str, ...]] = ("major", "minor", "patch")
 _DEFAULT_CONFIG: Final[Path] = Path("pyproject.toml")
 
@@ -141,11 +147,16 @@ def highest_part(parts: Iterable[str | None]) -> str | None:
     return None
 
 
-def next_version(last_tag: str | None, part: str) -> str:
-    """Return the version that raising *part* from *last_tag* produces."""
+def next_version(last_tag: str | None, part: str, prefix: str = DEFAULT_TAG_PREFIX) -> str:
+    """Return the version that raising *part* from *last_tag*, a *prefix* tag, produces.
+
+    Raises:
+        TagPrefixError:   When *prefix* is not allowed.
+        ReleasePlanError: When *last_tag* is not a *prefix* release tag.
+    """
     if last_tag is None:
         return {"major": "1.0.0", "minor": "0.1.0", "patch": "0.0.1"}[part]
-    matched = _RELEASE_TAG.match(last_tag)
+    matched = release_tag_pattern(prefix).match(last_tag)
     if matched is None:
         raise ReleasePlanError(f"tag '{last_tag}' is not a release tag")
     major, minor, patch = (int(group) for group in matched.groups())
@@ -160,13 +171,20 @@ def _tagged_commit(repository: Path, tag: str) -> str:
     return _run(("git", "-C", str(repository), "rev-list", "-n", "1", tag)).strip()
 
 
-def latest_release_tag(repository: Path, merge_sha: str) -> str | None:
-    """Return the highest release tag before *merge_sha*, ignoring its own tags.
+def latest_release_tag(
+    repository: Path, merge_sha: str, prefix: str = DEFAULT_TAG_PREFIX
+) -> str | None:
+    """Return the highest *prefix* release tag before *merge_sha*, ignoring its own tags.
 
     A release re-run for a commit that is already tagged must plan the same
     version again, so a tag pointing at *merge_sha* is not a release that
-    preceded it.
+    preceded it. Tags with another prefix belong to another release line, such
+    as another package of a monorepo, and are not read.
+
+    Raises:
+        TagPrefixError: When *prefix* is not allowed.
     """
+    pattern = release_tag_pattern(prefix)
     output = _run(
         (
             "git",
@@ -174,7 +192,7 @@ def latest_release_tag(repository: Path, merge_sha: str) -> str | None:
             str(repository),
             "tag",
             "--list",
-            _RELEASE_TAG_GLOB,
+            release_tag_glob(prefix),
             "--merged",
             merge_sha,
             "--sort=-v:refname",
@@ -182,7 +200,7 @@ def latest_release_tag(repository: Path, merge_sha: str) -> str | None:
     )
     for line in output.splitlines():
         candidate = line.strip()
-        if not _RELEASE_TAG.match(candidate):
+        if not pattern.match(candidate):
             continue
         if _tagged_commit(repository, candidate) == merge_sha:
             continue
@@ -215,6 +233,7 @@ def plan_release(
     commit_pull_requests: CommitPullRequests,
     *,
     config: Path = _DEFAULT_CONFIG,
+    tag_prefix: str = DEFAULT_TAG_PREFIX,
 ) -> ReleasePlan:
     """Return the release *merge_sha* ships, from the branches merged since the last tag.
 
@@ -230,16 +249,22 @@ def plan_release(
         commit_pull_requests: Reader of the head refs a commit came from.
         config:               TOML file holding the branch rules, relative to
             *repository* unless absolute.
+        tag_prefix:           Prefix of the release tags this release line reads,
+            ``v`` unless a monorepo package releases under its own.
 
     Returns:
         The planned release.
 
     Raises:
-        ReleasePlanError: When the range is empty, *config* does not exist, a
-            commit has no pull request, a branch is unclassified, or nothing in
-            the range ships a version.
+        ReleasePlanError: When *tag_prefix* is not allowed, the range is empty,
+            *config* does not exist, a commit has no pull request, a branch is
+            unclassified, or nothing in the range ships a version.
     """
-    last_tag = latest_release_tag(repository, merge_sha)
+    try:
+        check_tag_prefix(tag_prefix)
+    except TagPrefixError as error:
+        raise ReleasePlanError(str(error)) from error
+    last_tag = latest_release_tag(repository, merge_sha, tag_prefix)
     commits = shipped_commits(repository, last_tag, merge_sha)
     if not commits:
         raise ReleasePlanError(
@@ -265,7 +290,7 @@ def plan_release(
             "nothing to release: every branch since "
             f"{last_tag or 'the start of history'} belongs to a class that ships no version"
         )
-    return ReleasePlan(last_tag, part, next_version(last_tag, part), tuple(shipped))
+    return ReleasePlan(last_tag, part, next_version(last_tag, part, tag_prefix), tuple(shipped))
 
 
 def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
@@ -278,6 +303,11 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
         default=str(_DEFAULT_CONFIG),
         help="TOML file declaring [tool.semantic_branch], relative to --repository; "
         "empty means pyproject.toml",
+    )
+    parser.add_argument(
+        "--tag-prefix",
+        default=DEFAULT_TAG_PREFIX,
+        help="prefix of the release tags to read, before the version; v by default",
     )
     parser.add_argument(
         "--format",
@@ -301,6 +331,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             options.merge_sha,
             gh_commit_pull_requests(options.slug),
             config=Path(options.semantic_branch_config or _DEFAULT_CONFIG),
+            tag_prefix=options.tag_prefix,
         )
     except ReleasePlanError as error:
         _fail(str(error))

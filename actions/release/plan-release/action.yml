@@ -21,6 +21,14 @@ inputs:
       passes the pyproject.toml of the package it releases.
     required: false
     default: "pyproject.toml"
+  tag-prefix:
+    description: >
+      Prefix of the release tags read to plan the release and write its notes, before the
+      version: v1.2.3 by default. A monorepo package that releases on its own passes its own,
+      such as api-v, so another package's tags are never read. Letters, digits, ".", "_", "-"
+      and "/" only.
+    required: false
+    default: "v"
 
 outputs:
   version:
@@ -45,21 +53,24 @@ runs:
         NOTES_OUTPUT: ${{ inputs.notes-output }}
         GH_TOKEN: ${{ inputs.github-token }}
         SEMANTIC_BRANCH_CONFIG: ${{ inputs.semantic-branch-config }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
         python3 "${ACTION_PATH}/src/plan_release.py" \
           --merge-sha "${MERGE_SHA}" --slug "${REPOSITORY_SLUG}" \
-          --semantic-branch-config "${SEMANTIC_BRANCH_CONFIG}" | tee plan.txt
+          --semantic-branch-config "${SEMANTIC_BRANCH_CONFIG}" \
+          --tag-prefix="${TAG_PREFIX}" | tee plan.txt
         PLAN=$(python3 "${ACTION_PATH}/src/plan_release.py" \
           --merge-sha "${MERGE_SHA}" --slug "${REPOSITORY_SLUG}" \
-          --semantic-branch-config "${SEMANTIC_BRANCH_CONFIG}" --format github)
+          --semantic-branch-config "${SEMANTIC_BRANCH_CONFIG}" \
+          --tag-prefix="${TAG_PREFIX}" --format github)
         VERSION=$(jq -r .version <<< "${PLAN}")
         PART=$(jq -r .part <<< "${PLAN}")
         echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
         echo "part=${PART}" >> "$GITHUB_OUTPUT"
         {
-          echo "## Release v${VERSION}"
+          echo "## Release ${TAG_PREFIX}${VERSION}"
           echo
           echo '```'
           cat plan.txt
@@ -72,9 +83,10 @@ runs:
         MERGE_SHA: ${{ inputs.merge-sha }}
         VERSION: ${{ steps.plan.outputs.version }}
         NOTES_OUTPUT: ${{ inputs.notes-output }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
         git checkout --detach "${MERGE_SHA}"
         python3 "${ACTION_PATH}/src/build_release_notes.py" \
-          --version "${VERSION}" --output "${NOTES_OUTPUT}"
+          --version "${VERSION}" --output "${NOTES_OUTPUT}" --tag-prefix="${TAG_PREFIX}"

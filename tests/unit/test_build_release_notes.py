@@ -19,6 +19,7 @@ from build_release_notes import (  # noqa: E402
     ReleaseNotesError,
     build_release_notes,
     latest_release_tag,
+    main,
     release_entries,
     render_release_notes,
 )
@@ -123,3 +124,53 @@ class TestBuildReleaseNotes:
 
         assert "Changes since v1.10.0:" in notes
         assert "- feat: one" in notes
+
+
+class TestTagPrefix:
+    """The notes of a monorepo package list what shipped since its own last tag."""
+
+    def test_reads_only_the_tags_with_the_prefix(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "api-v1.10.0")
+        _commit(repository, "fix: worker")
+        _git(repository, "tag", "worker-v3.0.0")
+        _git(repository, "tag", "v7.0.0")
+        _commit(repository, "feat: api")
+
+        assert latest_release_tag(repository, "api-v") == "api-v1.10.0"
+        assert latest_release_tag(repository) == "v7.0.0"
+
+    def test_a_rerun_for_a_prefixed_tag_still_writes_its_notes(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "api-v1.10.0")
+        _commit(repository, "fix: worker")
+        _git(repository, "tag", "v7.0.0")
+        _commit(repository, "feat: api")
+        _git(repository, "tag", "api-v1.11.0")
+
+        notes = build_release_notes(repository, "1.11.0", "api-v")
+
+        assert "Changes since api-v1.10.0:" in notes
+        assert "- feat: api\n- fix: worker\n" in notes
+
+    def test_refuses_an_unsafe_prefix(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+
+        with pytest.raises(ReleaseNotesError, match="is not allowed"):
+            build_release_notes(repository, "1.0.0", "v`id`")
+
+    def test_default_prefix_notes_are_identical(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v1.10.0")
+        _commit(repository, "feat: one")
+        _git(repository, "tag", "api-v9.0.0")
+        _commit(repository, "fix: two")
+        written = []
+        for extra in ([], ["--tag-prefix", "v"]):
+            output = tmp_path / f"notes{len(written)}.md"
+            arguments = ["--repository", str(repository), "--version", "1.11.0"]
+            assert main([*arguments, "--output", str(output), *extra]) == 0
+            written.append(output.read_bytes())
+
+        assert written[0] == written[1]
+        assert b"Changes since v1.10.0:" in written[0]

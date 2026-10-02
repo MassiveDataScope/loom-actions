@@ -21,6 +21,12 @@ from plan_release import (  # noqa: E402
     next_version,
     plan_release,
 )
+from release_tags import (  # noqa: E402
+    TagPrefixError,
+    check_tag_prefix,
+    release_tag_glob,
+    release_tag_pattern,
+)
 
 _RULES = {
     "major": ("breaking/.*",),
@@ -352,3 +358,132 @@ class TestSemanticBranchConfig:
             plan_release(repository, bump, head_refs)
         with pytest.raises(ReleasePlanError, match="ships no version"):
             plan_release(repository, bump, head_refs, config=Path("release.toml"))
+
+
+class TestTagPrefix:
+    """A package of a monorepo plans from its own tags and never another package's."""
+
+    def test_the_default_reads_the_tags_it_always_read(self) -> None:
+        assert release_tag_glob() == "v[0-9]*.[0-9]*.[0-9]*"
+        assert release_tag_pattern().pattern == r"^v(\d+)\.(\d+)\.(\d+)$"
+
+    @pytest.mark.parametrize("prefix", ["control-plane-v", "api_v", "apps/api/v", "r.", "2"])
+    def test_a_safe_prefix_is_accepted(self, prefix: str) -> None:
+        assert check_tag_prefix(prefix) == prefix
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ["", "-v", "/v", ".v", "a..b", "a//b", "a/.b", "a.lock/v", "a v", "v$(id)", 'v"', "v*"],
+    )
+    def test_an_unsafe_prefix_is_refused(self, prefix: str) -> None:
+        with pytest.raises(TagPrefixError, match="is not allowed"):
+            check_tag_prefix(prefix)
+
+    def test_next_version_reads_the_prefixed_tag(self) -> None:
+        assert next_version("api-v1.9.9", "patch", "api-v") == "1.9.10"
+        with pytest.raises(ReleasePlanError, match="is not a release tag"):
+            next_version("v1.9.9", "patch", "api-v")
+
+    def test_another_packages_later_tag_is_not_read(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "api-v1.10.0")
+        _commit(repository, "fix: worker")
+        _git(repository, "tag", "worker-v3.0.0")
+        _git(repository, "tag", "v7.0.0")
+        merge = _commit(repository, "feat: api")
+        refs = {merge: ("feat/api",)}
+
+        plan = plan_release(
+            repository, merge, lambda sha: refs.get(sha, ("fix/x",)), tag_prefix="api-v"
+        )
+
+        assert (plan.last_tag, plan.part, plan.version) == ("api-v1.10.0", "minor", "1.11.0")
+        assert len(plan.shipped) == 2
+
+    def test_a_prefix_that_starts_another_prefix_does_not_read_its_tags(
+        self, tmp_path: Path
+    ) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "api-v1.0.0")
+        _commit(repository, "fix: one")
+        _git(repository, "tag", "api-v2-v5.0.0")
+        merge = _commit(repository, "fix: two")
+
+        plan = plan_release(repository, merge, lambda _sha: ("fix/x",), tag_prefix="api-v")
+
+        assert (plan.last_tag, plan.version) == ("api-v1.0.0", "1.0.1")
+
+    def test_a_package_without_tags_starts_from_zero_beside_other_packages(
+        self, tmp_path: Path
+    ) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        merge = _commit(repository, "feat: first")
+
+        plan = plan_release(repository, merge, lambda _sha: ("feat/x",), tag_prefix="api-v")
+
+        assert (plan.last_tag, plan.version) == (None, "0.1.0")
+
+    def test_a_slash_in_the_prefix_reads_the_nested_tags(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "apps/api/v0.3.0")
+        merge = _commit(repository, "fix: one")
+
+        plan = plan_release(repository, merge, lambda _sha: ("fix/x",), tag_prefix="apps/api/v")
+
+        assert (plan.last_tag, plan.version) == ("apps/api/v0.3.0", "0.3.1")
+
+    def test_a_rerun_of_a_prefixed_release_plans_the_same_version(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "api-v1.10.0")
+        merge = _commit(repository, "feat: one")
+        _git(repository, "tag", "api-v1.11.0", merge)
+
+        plan = plan_release(repository, merge, lambda _sha: ("feat/x",), tag_prefix="api-v")
+
+        assert (plan.last_tag, plan.version) == ("api-v1.10.0", "1.11.0")
+
+    def test_an_unsafe_prefix_fails_the_plan(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        merge = _commit(repository, "fix: one")
+
+        with pytest.raises(ReleasePlanError, match="is not allowed"):
+            plan_release(repository, merge, lambda _sha: ("fix/x",), tag_prefix="v;id")
+        with pytest.raises(SystemExit) as exited:
+            main(
+                [
+                    "--repository",
+                    str(repository),
+                    "--merge-sha",
+                    merge,
+                    "--slug",
+                    "o/r",
+                    "--tag-prefix=-v",
+                ]
+            )
+        assert exited.value.code == 1
+        assert "tag prefix '-v' is not allowed" in capsys.readouterr().err
+
+    def test_default_prefix_output_is_identical(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        _git(repository, "tag", "api-v4.0.0")
+        merge = _commit(repository, "feat: one")
+        monkeypatch.setattr(
+            plan_release_module, "gh_commit_pull_requests", lambda _slug: lambda _sha: ("feat/one",)
+        )
+        base = ["--repository", str(repository), "--merge-sha", merge, "--slug", "o/r"]
+
+        outputs = []
+        for extra in ([], ["--tag-prefix", "v"], ["--tag-prefix=v"]):
+            for output_format in ("text", "github"):
+                assert main([*base, *extra, "--format", output_format]) == 0
+                outputs.append(capsys.readouterr().out)
+
+        assert outputs[:2] == outputs[2:4] == outputs[4:]
+        assert outputs[0].startswith("last tag : v1.10.0\n")
+        assert outputs[1] == '{"version": "1.11.0", "part": "minor"}\n'
