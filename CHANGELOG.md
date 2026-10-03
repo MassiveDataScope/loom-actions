@@ -1,3 +1,20 @@
+# 🚀 Release 1.10.1 ([#65](https://github.com/MassiveDataScope/loom-actions/pull/65)) ([`5f5d304`](https://github.com/MassiveDataScope/loom-actions/commit/5f5d304a3da47c7e35353c6e494e25c70b0cff1d))
+
+
+
+## 🐛 Fixes
+### release
+- **release:** raise loom-actions' own release to a major on a declared break
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.10.0 ([#63](https://github.com/MassiveDataScope/loom-actions/pull/63)) ([`492963f`](https://github.com/MassiveDataScope/loom-actions/commit/492963f079e7dd35e4c2c946a30c9dac279a1880))
 
 
