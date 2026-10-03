@@ -20,6 +20,14 @@ inputs:
       written to config-file.
     required: false
     default: ""
+  breaking:
+    description: >
+      "true" when a commit of the release declares a break (a "!" before the colon of
+      its subject or a BREAKING CHANGE footer): the version is raised to a major and a
+      release_ignore branch is released. "false" by default, which keeps the version
+      the branch rules alone give.
+    required: false
+    default: "false"
 
 outputs:
   version:
@@ -46,6 +54,7 @@ runs:
         PRERELEASE: ${{ inputs.prerelease }}
         CONFIG_FILE: ${{ inputs.config-file }}
         SEMANTIC_BRANCH_CONFIG: ${{ inputs.semantic-branch-config }}
+        BREAKING: ${{ inputs.breaking }}
       run: |
         set -euo pipefail
         result=$(uv run --with-requirements "${{ github.action_path }}/requirements.txt" \
@@ -53,7 +62,8 @@ runs:
           --branch "${BRANCH}" \
           --prerelease "${PRERELEASE}" \
           --config "${CONFIG_FILE}" \
-          --semantic-branch-config "${SEMANTIC_BRANCH_CONFIG}")
+          --semantic-branch-config "${SEMANTIC_BRANCH_CONFIG}" \
+          --breaking "${BREAKING}")
 
         version=$(echo "$result" | awk -F= '/^version=/{print $2}')
         deploy=$(echo "$result" | awk -F= '/^deploy=/{print $2}')

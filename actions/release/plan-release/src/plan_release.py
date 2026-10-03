@@ -217,6 +217,30 @@ def shipped_commits(repository: Path, last_tag: str | None, merge_sha: str) -> t
     return tuple(line.strip() for line in output.splitlines() if line.strip())
 
 
+def breaking_commits(
+    repository: Path, merge_sha: str, tag_prefix: str = DEFAULT_TAG_PREFIX
+) -> tuple[str, ...]:
+    """Return the commits since the last *tag_prefix* release that declare a break.
+
+    The range is the one :func:`plan_release` ships: from the highest release
+    tag before *merge_sha* to *merge_sha*, or the whole history without a tag.
+
+    Raises:
+        ReleasePlanError: When *tag_prefix* is not allowed or git cannot read
+            the range.
+    """
+    try:
+        check_tag_prefix(tag_prefix)
+    except TagPrefixError as error:
+        raise ReleasePlanError(str(error)) from error
+    last_tag = latest_release_tag(repository, merge_sha, tag_prefix)
+    return tuple(
+        sha
+        for sha in shipped_commits(repository, last_tag, merge_sha)
+        if declares_break(commit_message(repository, sha))
+    )
+
+
 def gh_commit_pull_requests(slug: str) -> CommitPullRequests:
     """Return a reader of the head refs of the pull requests a commit came from."""
 

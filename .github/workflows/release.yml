@@ -64,12 +64,26 @@ jobs:
 
       - uses: astral-sh/setup-uv@v3
 
+      # The branch name sets the part. A commit since the last release that
+      # declares a break raises it to a major, read by the same code
+      # plan-release uses, so this release follows the rule release-on-label does.
+      - name: Detect a declared break since the last release
+        id: break
+        shell: bash
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PLANNER_SRC: actions/release/plan-release/src
+        run: |
+          set -euo pipefail
+          python3 "${PLANNER_SRC}/declared_break.py" --merge-sha "${MERGE_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Compute version from branch semantic rules
         id: version
         uses: ./actions/release/versioning-branch-semantic
         with:
           branch: ${{ needs.detect.outputs.branch }}
           prerelease: "false"
+          breaking: ${{ steps.break.outputs.breaking }}
 
       - name: Generate changelog and update CHANGELOG.md
         if: ${{ steps.version.outputs.deploy == 'true' }}

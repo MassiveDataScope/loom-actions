@@ -43,11 +43,18 @@ def matches(branch: str, patterns: list[str] | None) -> bool:
     return any(re.fullmatch(pattern, branch) for pattern in patterns)
 
 
-def bump(branch: str, cfg: SemanticBranchConfig, current: str) -> str:
-    """Increment version number according to the rules defined in config."""
+def bump(branch: str, cfg: SemanticBranchConfig, current: str, breaking: bool = False) -> str:
+    """Increment version number according to the rules defined in config.
+
+    A declared break raises a major whatever the branch asks for.
+    """
     major, minor, patch = map(int, current.split("."))
 
-    if matches(branch, cfg.get("minor")):
+    if breaking:
+        major += 1
+        minor = 0
+        patch = 0
+    elif matches(branch, cfg.get("minor")):
         minor += 1
         patch = 0
     elif matches(branch, cfg.get("major")):
@@ -61,21 +68,28 @@ def bump(branch: str, cfg: SemanticBranchConfig, current: str) -> str:
 
 
 def calc_next_version(
-    cfg: SemanticBranchConfig, branch: str, prerelease: bool, current: str
+    cfg: SemanticBranchConfig,
+    branch: str,
+    prerelease: bool,
+    current: str,
+    breaking: bool = False,
 ) -> tuple[str, bool]:
     """
     Calculate the next version number based on branch name and configuration.
+
+    When *breaking* is true a commit declared a break: the release is a major and
+    is not skipped by ``release_ignore``, as plan-release decides.
 
     Returns:
         - the calculated version string
         - a boolean indicating whether deployment should proceed
     """
     if (prerelease and matches(branch, cfg.get("prerelease_ignore"))) or (
-        not prerelease and matches(branch, cfg.get("release_ignore"))
+        not prerelease and not breaking and matches(branch, cfg.get("release_ignore"))
     ):
         return VERSION_UNRELEASED, False
 
-    next_version = bump(branch, cfg, current)
+    next_version = bump(branch, cfg, current, breaking)
     if prerelease and matches(branch, cfg.get("prerelease")):
         count = subprocess.check_output(
             ["git", "rev-list", "--count", "HEAD"],
@@ -115,6 +129,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="TOML file declaring [tool.semantic_branch]; empty reads it from --config",
     )
+    parser.add_argument(
+        "--breaking",
+        required=False,
+        default="false",
+        help="true when a commit declared a break: raises the version to a major",
+    )
     return parser.parse_args()
 
 
@@ -129,9 +149,10 @@ def main() -> None:
         cfg: SemanticBranchConfig = rules.get("tool", {}).get("semantic_branch", {})
         current_version: str = data.get("project", {}).get("version", "0.1.0")
         prerelease: bool = args.prerelease.lower() == "true"
+        breaking: bool = args.breaking.lower() == "true"
 
         version, deploy = calc_next_version(
-            cfg, args.branch, prerelease, current_version
+            cfg, args.branch, prerelease, current_version, breaking
         )
 
         if deploy and Path(args.config).suffix == ".toml":
