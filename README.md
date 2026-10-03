@@ -205,6 +205,11 @@ jobs:
 
 - The planner (`actions/release/plan-release`) is pinned by the commit of a release, so a
   caller's SHA pin on this workflow also fixes the planner it runs.
+- The planner composite takes `tag-prefix` (`v` by default): it reads only the tags
+  `<prefix>X.Y.Z` to find the last release and write the notes, so a monorepo package
+  released as `api-v0.4.0` never plans from another package's tags. Letters, digits, `.`,
+  `_`, `-` and `/` only, starting with a letter or a digit. This workflow does not pass it
+  yet: the planner it pins (v1.5.0) predates the input, so it still reads `vX.Y.Z`.
 - The build checks out the tag with its full history, so a version read from git (hatch-vcs,
   setuptools-scm) is the tag's. A wheel with any other version fails the build instead of
   burning a version on the index.

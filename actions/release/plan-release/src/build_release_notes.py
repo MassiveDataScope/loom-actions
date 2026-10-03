@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import NoReturn
 
-_RELEASE_TAG_GLOB = "v[0-9]*.[0-9]*.[0-9]*"
-_RELEASE_TAG = re.compile(r"^v\d+\.\d+\.\d+$")
+from release_tags import (
+    DEFAULT_TAG_PREFIX,
+    TagPrefixError,
+    check_tag_prefix,
+    release_tag_glob,
+    release_tag_pattern,
+)
 
 
 class ReleaseNotesError(RuntimeError):
@@ -32,27 +36,32 @@ def _tagged_commit(repository: Path, tag: str) -> str:
     return _run_git(repository, "rev-list", "-n", "1", tag).strip()
 
 
-def latest_release_tag(repository: Path) -> str | None:
-    """Return the highest version tag before HEAD, ignoring a tag on HEAD itself.
+def latest_release_tag(repository: Path, prefix: str = DEFAULT_TAG_PREFIX) -> str | None:
+    """Return the highest *prefix* version tag before HEAD, ignoring a tag on HEAD itself.
 
     Notes are rebuilt when a release is re-run for a commit that is already
-    tagged, so a tag pointing at HEAD is not a release that preceded it.
+    tagged, so a tag pointing at HEAD is not a release that preceded it. Tags
+    with another prefix belong to another release line and are not read.
+
+    Raises:
+        TagPrefixError: When *prefix* is not allowed.
     """
+    pattern = release_tag_pattern(prefix)
     head = _run_git(repository, "rev-parse", "HEAD").strip()
     output = _run_git(
         repository,
         "tag",
         "--list",
-        _RELEASE_TAG_GLOB,
+        release_tag_glob(prefix),
         "--merged",
         "HEAD",
         "--sort=-v:refname",
     )
     for line in output.splitlines():
         candidate = line.strip()
-        if _RELEASE_TAG.match(candidate) and _tagged_commit(repository, candidate) == head:
+        if pattern.match(candidate) and _tagged_commit(repository, candidate) == head:
             continue
-        if _RELEASE_TAG.match(candidate):
+        if pattern.match(candidate):
             return candidate
     return None
 
@@ -75,9 +84,15 @@ def render_release_notes(version: str, last_tag: str | None, entries: Sequence[s
     return f"# 🚀 Release {version}\n\n{since}\n\n{listed}\n"
 
 
-def build_release_notes(repository: Path, version: str) -> str:
-    """Return the notes for every commit between the last reachable tag and HEAD."""
-    last_tag = latest_release_tag(repository)
+def build_release_notes(
+    repository: Path, version: str, tag_prefix: str = DEFAULT_TAG_PREFIX
+) -> str:
+    """Return the notes for every commit between the last reachable *tag_prefix* tag and HEAD."""
+    try:
+        check_tag_prefix(tag_prefix)
+    except TagPrefixError as error:
+        raise ReleaseNotesError(str(error)) from error
+    last_tag = latest_release_tag(repository, tag_prefix)
     return render_release_notes(version, last_tag, release_entries(repository, last_tag))
 
 
@@ -88,6 +103,11 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument("--version", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--tag-prefix",
+        default=DEFAULT_TAG_PREFIX,
+        help="prefix of the release tags to read, before the version; v by default",
+    )
     return parser.parse_args(arguments)
 
 
@@ -99,7 +119,7 @@ def _fail(message: str) -> NoReturn:
 def main(arguments: Sequence[str] | None = None) -> int:
     options = _parse_args(arguments)
     try:
-        notes = build_release_notes(options.repository, options.version)
+        notes = build_release_notes(options.repository, options.version, options.tag_prefix)
     except ReleaseNotesError as error:
         _fail(str(error))
     options.output.write_text(notes, encoding="utf-8")
