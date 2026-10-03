@@ -1,3 +1,56 @@
+# 🚀 Release 1.10.0 ([#63](https://github.com/MassiveDataScope/loom-actions/pull/63)) ([`492963f`](https://github.com/MassiveDataScope/loom-actions/commit/492963f079e7dd35e4c2c946a30c9dac279a1880))
+
+
+## ✨ Features
+### release-on-label
+- **release-on-label:** release on the tags of one prefix<br>
+  > Add the tag-prefix input (default "v") and pin plan-release to the v1.9.0
+  > release commit, which takes it. The prefix reaches the planner, the
+  > immutable version tag, the floating major tag, the build checkout and the
+  > GitHub Release, so a monorepo package can release as control-plane/v0.1.0
+  > and move control-plane/v0. It is checked first with the planner's rule
+  > (release_tags.check_tag_prefix) and reaches the scripts through env only.
+  > With the default prefix the tag scripts make the same gh calls and the
+  > build ref, tag_name and name are the same strings as before.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+## 📖 Documentation
+### readme
+- **readme:** document tag-prefix on release-on-label<br>
+  > Add a monorepo example with a path-style prefix (control-plane/v) and
+  > replace the note that the workflow did not pass the prefix yet.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+## 🔖 Other
+- fix(release-on-label)!: let the planner read pull requests<br>
+  > The planner maps each merged commit to its pull request with
+  > commits/{sha}/pulls. A public repository answers without a permission,
+  > so public callers never noticed; a private one answers 403 "Resource
+  > not accessible by integration" and the plan fails before any tag is
+  > written. Found by a release run in a private sandbox repository.
+  > The plan job now asks for pull-requests: read. A caller must grant it,
+  > since a called workflow never gets more than its caller: the README and
+  > PUBLISHING examples and the caller fixture grant it.
+  > BREAKING CHANGE: callers of release-on-label must grant
+  > pull-requests: read to the job that calls it, next to contents: write.
+  > Without it GitHub refuses to start the run.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
 # 🚀 Release 1.9.0 ([#61](https://github.com/MassiveDataScope/loom-actions/pull/61)) ([`90410a7`](https://github.com/MassiveDataScope/loom-actions/commit/90410a7112c5da939116ba64f9bf24e5f8a14e12))
 
 
