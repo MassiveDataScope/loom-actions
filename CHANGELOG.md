@@ -1,3 +1,20 @@
+# 🚀 Release 1.9.0 ([#61](https://github.com/MassiveDataScope/loom-actions/pull/61)) ([`90410a7`](https://github.com/MassiveDataScope/loom-actions/commit/90410a7112c5da939116ba64f9bf24e5f8a14e12))
+
+
+## ✨ Features
+### plan-release
+- **plan-release:** plan and write notes from the tags of one prefix
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.8.1 ([#48](https://github.com/MassiveDataScope/loom-actions/pull/48)) ([`cf2cf11`](https://github.com/MassiveDataScope/loom-actions/commit/cf2cf11f2b09d538250219616f6e85967268d80e))
 
 

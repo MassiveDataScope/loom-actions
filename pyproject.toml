@@ -1,6 +1,6 @@
 [project]
 name = "loom-actions"
-version = "1.8.1"
+version = "1.9.0"
 description = "Reusable GitHub Actions for Python OSS workflows"
 requires-python = ">=3.11"
 
