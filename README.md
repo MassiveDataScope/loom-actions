@@ -175,6 +175,7 @@ jobs:
   release:
     permissions:
       contents: write
+      pull-requests: read # the planner reads the pull request of each merged commit
     uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
     with:
       build-distribution: true
@@ -195,6 +196,7 @@ jobs:
   release:
     permissions:
       contents: write
+      pull-requests: read # the planner reads the pull request of each merged commit
     uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
     with:
       build-distribution: true

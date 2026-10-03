@@ -89,6 +89,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # The planner maps each merged commit to its pull request
+      # (commits/{sha}/pulls); a private repository needs this to read it.
+      pull-requests: read
     outputs:
       version: ${{ steps.plan.outputs.version }}
       release_sha: ${{ env.MERGE_SHA }}

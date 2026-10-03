@@ -248,3 +248,11 @@ class TestTheMajorTag:
             "api --method POST repos/o/r/git/refs "
             f"-f ref=refs/tags/control-plane/v0 -f sha={MERGE_SHA}"
         )
+
+
+def test_the_plan_job_can_read_pull_requests_in_a_private_repository() -> None:
+    """The planner calls commits/{sha}/pulls: a private repository answers 403 without it."""
+    workflow = yaml.safe_load(
+        (Path(__file__).parents[2] / ".github/workflows/release-on-label.yml").read_text()
+    )
+    assert workflow["jobs"]["plan"]["permissions"]["pull-requests"] == "read"

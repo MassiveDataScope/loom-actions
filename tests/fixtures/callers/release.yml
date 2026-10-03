@@ -23,6 +23,7 @@ jobs:
   release:
     permissions:
       contents: write
+      pull-requests: read
     uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@0000000000000000000000000000000000000000
     with:
       build-distribution: true
