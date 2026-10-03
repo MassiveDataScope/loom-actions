@@ -175,6 +175,7 @@ jobs:
   release:
     permissions:
       contents: write
+      pull-requests: read # the planner reads the pull request of each merged commit
     uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
     with:
       build-distribution: true
@@ -186,6 +187,25 @@ jobs:
       merge-sha: ${{ inputs.merge_sha || '' }}
 ```
 
+A monorepo package that releases on its own passes its directory and a tag prefix of its
+own. With the path-style prefix of the Go modules convention, it is tagged
+`control-plane/v0.1.0`, moves `control-plane/v0` and never reads another package's tags:
+
+```yaml
+jobs:
+  release:
+    permissions:
+      contents: write
+      pull-requests: read # the planner reads the pull request of each merged commit
+    uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
+    with:
+      build-distribution: true
+      package-name: control-plane
+      package-dir: apps/control-plane
+      semantic-branch-config: apps/control-plane/pyproject.toml
+      tag-prefix: control-plane/v
+```
+
 | Input | Default | Effect |
 |---|---|---|
 | `release-label` | `release` | label that authorises a release when its pull request merges |
@@ -195,6 +215,7 @@ jobs:
 | `package-dir` | `.` | directory of the package, relative to the root, no trailing slash: `uv lock --check`, the build and the wheel name check run there, and `<package-dir>/dist/` is uploaded |
 | `semantic-branch-config` | `pyproject.toml` | TOML file, relative to the root, whose `[tool.semantic_branch]` decides the version |
 | `check-distribution` | `false` | run `twine check --strict` (twine 7.0.0) on every built distribution before storing it |
+| `tag-prefix` | `v` | prefix of the release tags: the planner reads `<prefix>X.Y.Z`, the workflow creates it, moves `<prefix>X`, builds at it and names the GitHub Release after it |
 | `python-version`, `uv-version` | `3.11`, `0.10.2` | toolchain of the build |
 | `merge-sha` | empty | commit to release, to resume a run that stopped halfway |
 
@@ -205,11 +226,13 @@ jobs:
 
 - The planner (`actions/release/plan-release`) is pinned by the commit of a release, so a
   caller's SHA pin on this workflow also fixes the planner it runs.
-- The planner composite takes `tag-prefix` (`v` by default): it reads only the tags
-  `<prefix>X.Y.Z` to find the last release and write the notes, so a monorepo package
-  released as `api-v0.4.0` never plans from another package's tags. Letters, digits, `.`,
-  `_`, `-` and `/` only, starting with a letter or a digit. This workflow does not pass it
-  yet: the planner it pins (v1.5.0) predates the input, so it still reads `vX.Y.Z`.
+- The workflow passes `tag-prefix` (`v` by default) to the planner it pins (v1.9.0), which
+  reads only the tags `<prefix>X.Y.Z` to find the last release and write the notes, so a
+  monorepo package released as `control-plane/v0.1.0` never plans from another package's
+  tags. The same prefix names the tag the workflow creates, the major tag it moves, the tag
+  the build checks out and the GitHub Release. Letters, digits, `.`, `_`, `-` and `/` only,
+  starting with a letter or a digit, without `..`, `//`, `/.` or `.lock/`: the workflow
+  checks it with the planner's rule before it plans, tags or releases anything.
 - The build checks out the tag with its full history, so a version read from git (hatch-vcs,
   setuptools-scm) is the tag's. A wheel with any other version fails the build instead of
   burning a version on the index.

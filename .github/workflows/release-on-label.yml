@@ -63,6 +63,15 @@ on:
         required: false
         type: boolean
         default: false
+      tag-prefix:
+        description: >-
+          Prefix of the release tags, before the version: v1.2.3 by default. A monorepo
+          package that releases on its own passes its own, such as control-plane/v for
+          control-plane/v0.1.0 and the major tag control-plane/v0. Letters, digits, ".", "_",
+          "-" and "/" only, starting with a letter or a digit
+        required: false
+        type: string
+        default: "v"
     outputs:
       version:
         description: "Version the release published"
@@ -80,12 +89,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # The planner maps each merged commit to its pull request
+      # (commits/{sha}/pulls); a private repository needs this to read it.
+      pull-requests: read
     outputs:
       version: ${{ steps.plan.outputs.version }}
       release_sha: ${{ env.MERGE_SHA }}
     env:
       MERGE_SHA: ${{ inputs.merge-sha != '' && inputs.merge-sha || github.event.pull_request.merge_commit_sha }}
     steps:
+      # The planner's rule (release_tags.check_tag_prefix), checked before
+      # anything runs: the prefix names refs and REST paths below.
+      - name: Require a valid tag prefix
+        shell: bash
+        env:
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          LC_ALL: C
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG_PREFIX}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "tag prefix '${TAG_PREFIX}' is not allowed: start with a letter or a digit and use only letters, digits, '.', '_', '-' and '/'"
+            exit 1
+          fi
+          case "${TAG_PREFIX}" in
+            *..* | *//* | */.* | *.lock/*)
+              echo "tag prefix '${TAG_PREFIX}' holds a sequence git refuses in a ref name"
+              exit 1
+              ;;
+          esac
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
@@ -121,12 +153,13 @@ jobs:
       # release. The composite at this commit is the one in this tree.
       - name: Plan the release
         id: plan
-        uses: MassiveDataScope/loom-actions/actions/release/plan-release@f18400c1b3dfb7b125b110293f5631f45e99855d # v1.5.0
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release@07db44adbf2faf48925d75b03b46384877b56773 # v1.9.0
         with:
           merge-sha: ${{ env.MERGE_SHA }}
           repository-slug: ${{ github.repository }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           semantic-branch-config: ${{ inputs.semantic-branch-config }}
+          tag-prefix: ${{ inputs.tag-prefix }}
 
       - name: Store release notes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -142,11 +175,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.plan.outputs.version }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG_REF="refs/tags/v${VERSION}"
-          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v${VERSION}")
+          TAG="${TAG_PREFIX}${VERSION}"
+          TAG_REF="refs/tags/${TAG}"
+          # A "/" in the tag stays a literal path separator, as in the url GitHub
+          # returns for such a ref (.../git/refs/tags/gopls/v0.14.0 in golang/tools).
+          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${TAG}")
           TAG_COUNT=$(jq --arg ref "${TAG_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${TAGS}")
 
           if [ "${TAG_COUNT}" -gt 1 ]; then
@@ -155,10 +192,10 @@ jobs:
           elif [ "${TAG_COUNT}" -eq 1 ]; then
             REMOTE_SHA=$(jq -r --arg ref "${TAG_REF}" '.[] | select(.ref == $ref) | .object.sha' <<< "${TAGS}")
             if [ "${REMOTE_SHA}" != "${MERGE_SHA}" ]; then
-              echo "Tag v${VERSION} points to ${REMOTE_SHA}, expected ${MERGE_SHA}."
+              echo "Tag ${TAG} points to ${REMOTE_SHA}, expected ${MERGE_SHA}."
               exit 1
             fi
-            echo "Tag v${VERSION} already points at the release commit."
+            echo "Tag ${TAG} already points at the release commit."
           else
             gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
               -f ref="${TAG_REF}" \
@@ -180,7 +217,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-          ref: v${{ needs.plan.outputs.version }}
+          ref: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
           persist-credentials: false
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -268,19 +305,20 @@ jobs:
       - name: Update floating major tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
         shell: bash
         run: |
           set -euo pipefail
-          MAJOR=${VERSION%%.*}
-          MAJOR_REF="refs/tags/v${MAJOR}"
-          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v${MAJOR}")
+          MAJOR_TAG="${TAG_PREFIX}${VERSION%%.*}"
+          MAJOR_REF="refs/tags/${MAJOR_TAG}"
+          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${MAJOR_TAG}")
           MAJOR_COUNT=$(jq --arg ref "${MAJOR_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${TAGS}")
 
           if [ "${MAJOR_COUNT}" -gt 1 ]; then
             echo "GitHub returned duplicate exact refs for ${MAJOR_REF}."
             exit 1
           elif [ "${MAJOR_COUNT}" -eq 1 ]; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/v${MAJOR}" \
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" \
               -f sha="${RELEASE_SHA}" \
               -F force=true
           else
@@ -292,6 +330,6 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
-          tag_name: v${{ needs.plan.outputs.version }}
-          name: v${{ needs.plan.outputs.version }}
+          tag_name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
+          name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
           body_path: CHANGELOG_RELEASE.md
