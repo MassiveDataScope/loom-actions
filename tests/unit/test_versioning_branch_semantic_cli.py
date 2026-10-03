@@ -146,3 +146,51 @@ def test_dependabot_branch_is_release_ignore_when_configured(
 
     assert output == "version=UNRELEASED\ndeploy=false\n"
     assert project.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize("branch", ["feat/x", "fix/x", "docs/x"])
+def test_without_a_declared_break_the_output_is_identical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    branch: str,
+) -> None:
+    without = _project(tmp_path / "without.toml", "1.2.3", RULES)
+    explicit = _project(tmp_path / "explicit.toml", "1.2.3", RULES)
+
+    plain = _run(monkeypatch, capsys, "--branch", branch, "--config", str(without))
+    unmarked = _run(
+        monkeypatch, capsys, "--branch", branch, "--config", str(explicit), "--breaking", "false"
+    )
+
+    assert plain == unmarked
+    assert without.read_text(encoding="utf-8") == explicit.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("branch", ["feat/x", "fix/x"])
+def test_a_declared_break_raises_any_branch_to_a_major(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    branch: str,
+) -> None:
+    project = _project(tmp_path / "pyproject.toml", "1.10.0", RULES)
+
+    output = _run(
+        monkeypatch, capsys, "--branch", branch, "--config", str(project), "--breaking", "true"
+    )
+
+    assert output == "version=2.0.0\ndeploy=true\n"
+    assert 'version = "2.0.0"' in project.read_text(encoding="utf-8")
+
+
+def test_a_declared_break_is_released_even_from_an_ignored_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = _project(tmp_path / "pyproject.toml", "1.10.0", RULES)
+
+    output = _run(
+        monkeypatch, capsys, "--branch", "docs/x", "--config", str(project), "--breaking", "true"
+    )
+
+    assert output == "version=2.0.0\ndeploy=true\n"
