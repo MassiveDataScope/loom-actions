@@ -156,15 +156,27 @@ class TestClassify:
 
     @pytest.mark.parametrize(
         "title",
-        ["Add the thing", "feat:missing space", "feat(): empty scope", "feat add it", ""],
+        [
+            "Add the thing",
+            "feat:missing space",
+            "feat(): empty scope",
+            "feat()!: empty scope",
+            "feat add it",
+            "",
+        ],
     )
     def test_a_title_that_is_not_a_conventional_commit_is_refused(self, title: str) -> None:
         with pytest.raises(ChangelogError, match="not a Conventional Commits header"):
             classify(_change(title))
 
-    def test_a_type_without_a_section_is_refused_instead_of_dropped(self) -> None:
+    @pytest.mark.parametrize("title", ["spike: try it", "spike!: try it", "spike(api)!: try it"])
+    def test_a_type_without_a_section_is_refused_instead_of_dropped(self, title: str) -> None:
         with pytest.raises(ChangelogError, match="type 'spike' has no changelog section"):
-            classify(_change("spike: try it"))
+            classify(_change(title))
+
+    def test_a_footer_does_not_excuse_a_type_without_a_section(self) -> None:
+        with pytest.raises(ChangelogError, match="type 'spike' has no changelog section"):
+            classify(_change("spike: try it", breaking=True))
 
 
 class TestRenderSection:

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, NoReturn
 
+from conventional_commits import declares_break
 from release_history import (
     CommitPullRequests,
     HistoryError,
@@ -110,26 +111,6 @@ def classify_branch(head_ref: str, rules: Mapping[str, tuple[str, ...]]) -> str 
         f"branch '{head_ref}' matches no class in [tool.semantic_branch]: "
         "add its prefix there or rename the branch"
     )
-
-
-_BREAK_SUBJECT = re.compile(r"[a-zA-Z]+(?:\([^)]*\))?!:")
-_BREAK_FOOTER = re.compile(r"^BREAKING[ -]CHANGE:", re.MULTILINE)
-
-
-def declares_break(message: str) -> bool:
-    """Return whether *message* declares a breaking change, per Conventional Commits.
-
-    Two spellings carry it: a ``!`` before the colon of the subject, and a
-    ``BREAKING CHANGE:`` (or ``BREAKING-CHANGE:``) footer.
-
-    Args:
-        message: The commit's full message, subject and body.
-
-    Returns:
-        Whether the commit declares a break.
-    """
-    subject, _, body = message.partition("\n")
-    return bool(_BREAK_SUBJECT.match(subject.strip()) or _BREAK_FOOTER.search(body))
 
 
 def highest_part(parts: Iterable[str | None]) -> str | None:

@@ -54,7 +54,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
-from plan_release import declares_break
+from conventional_commits import ConventionalCommit, declares_break
 from release_history import (
     CHANGELOG_NAME,
     CommitPullRequests,
@@ -104,9 +104,6 @@ INTRO: Final[str] = (
 )
 _NEW_FILE: Final[str] = f"{INTRO}\n## [Unreleased]\n"
 _NO_CHANGES: Final[str] = "No user-facing changes."
-_HEADER: Final[re.Pattern[str]] = re.compile(
-    r"^(?P<type>[A-Za-z]+)(?:\((?P<scope>[^()\s][^()]*)\))?(?P<bang>!)?: (?P<description>\S.*)$"
-)
 _UNRELEASED: Final[re.Pattern[str]] = re.compile(r"^## \[unreleased\]\s*$", re.IGNORECASE)
 _REFERENCE: Final[re.Pattern[str]] = re.compile(r"^\[[^\]]+\]: \S+$")
 
@@ -161,9 +158,7 @@ def _is_security(scope: str | None) -> bool:
     )
 
 
-def _section(kind: str, scope: str | None, breaking: bool) -> str | None:
-    if breaking:
-        return "Changed"
+def _section(kind: str, scope: str | None) -> str | None:
     if kind == "fix" and _is_security(scope):
         return "Security"
     if kind in _SECTION_OF_TYPE:
@@ -179,24 +174,28 @@ def _section(kind: str, scope: str | None, breaking: bool) -> str | None:
 def classify(change: Change) -> Entry | None:
     """Return the changelog entry of *change*, or None when no user sees it.
 
+    The type is checked before the break, so a break never lets an unknown
+    type through.
+
     Raises:
         ChangelogError: When the title is not a Conventional Commits header or
             its type has no section.
     """
-    matched = _HEADER.match(change.title.strip())
-    if matched is None:
+    parsed = ConventionalCommit.parse(change.title)
+    if parsed is None:
         raise ChangelogError(
             f"'{change.title}' is not a Conventional Commits header, such as "
             "'feat(api): add the endpoint': edit the pull request title and re-run"
         )
-    scope = matched["scope"]
-    breaking = change.breaking or matched["bang"] is not None
-    section = _section(matched["type"].lower(), scope, breaking)
+    section = _section(parsed.type, parsed.scope)
+    breaking = change.breaking or parsed.breaking
+    if breaking:
+        section = "Changed"
     if section is None:
         return None
-    text = matched["description"].strip()
-    if scope:
-        text = f"**{scope}:** {text}"
+    text = parsed.description
+    if parsed.scope:
+        text = f"**{parsed.scope}:** {text}"
     if breaking:
         text = f"**BREAKING:** {text}"
     if change.reference:

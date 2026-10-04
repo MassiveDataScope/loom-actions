@@ -16,7 +16,6 @@ from plan_release import (  # noqa: E402
     ReleasePlanError,
     breaking_commits,
     classify_branch,
-    declares_break,
     highest_part,
     main,
     next_version,
@@ -106,33 +105,6 @@ class TestClassifyBranch:
             classify_branch("spike/x", _RULES)
 
 
-class TestDeclaresBreak:
-    @pytest.mark.parametrize(
-        "message",
-        [
-            "feat!: drop it",
-            "feat(api)!: drop it",
-            "fix: keep it\n\nBREAKING CHANGE: the field is gone",
-            "fix: keep it\n\nBREAKING-CHANGE: the field is gone",
-        ],
-    )
-    def test_reads_every_spelling_of_the_marker(self, message: str) -> None:
-        assert declares_break(message) is True
-
-    @pytest.mark.parametrize(
-        "message",
-        [
-            "feat: add it",
-            "fix(api): repair it",
-            "docs: say that this is a BREAKING CHANGE for consumers",
-            "feat: the ! belongs to the prose, not to the type",
-            "fix: repair the parser!: only the type may carry the marker",
-        ],
-    )
-    def test_does_not_read_a_break_where_there_is_none(self, message: str) -> None:
-        assert declares_break(message) is False
-
-
 class TestHighestPart:
     def test_a_feature_in_the_batch_wins_over_every_fix(self) -> None:
         assert highest_part(["patch", "minor", "patch", None]) == "minor"
@@ -219,6 +191,16 @@ class TestPlanRelease:
         plan = plan_release(repository, marked, _prs(refs))
 
         assert (plan.part, plan.version) == ("major", "2.0.0")
+
+    def test_an_empty_scope_is_no_header_so_its_bang_ships_no_major(self, tmp_path: Path) -> None:
+        """Conventional Commits 1.0.0 item 4: ``()`` holds no noun; the changelog refuses it too."""
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        unmarked = _commit(repository, "feat()!: rename the field")
+
+        plan = plan_release(repository, unmarked, _prs(default=("feat/rename",)))
+
+        assert (plan.part, plan.version) == ("minor", "1.11.0")
 
     def test_a_range_ending_before_a_feature_leaves_it_for_the_next_release(
         self, tmp_path: Path
