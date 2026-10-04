@@ -204,6 +204,7 @@ jobs:
       package-dir: apps/control-plane
       semantic-branch-config: apps/control-plane/pyproject.toml
       tag-prefix: control-plane/v
+      shared-paths: uv.lock # ships the commits touching apps/control-plane or uv.lock
       changelog: true # keeps apps/control-plane/CHANGELOG.md
 ```
 
@@ -217,6 +218,7 @@ jobs:
 | `semantic-branch-config` | `pyproject.toml` | TOML file, relative to the root, whose `[tool.semantic_branch]` decides the version |
 | `check-distribution` | `false` | run `twine check --strict` (twine 7.0.0) on every built distribution before storing it |
 | `tag-prefix` | `v` | prefix of the release tags: the planner reads `<prefix>X.Y.Z`, the workflow creates it, moves `<prefix>X`, builds at it and names the GitHub Release after it |
+| `shared-paths` | empty | paths, separated by newlines or commas, a package other than the root shares with the others, such as `uv.lock`; the release then ships only the commits touching `package-dir` or one of them |
 | `changelog` | `false` | keep `<package-dir>/CHANGELOG.md` in the Keep a Changelog 1.1.0 format, commit it to `base-branch` and use the new section as the GitHub Release body |
 | `python-version`, `uv-version` | `3.11`, `0.10.2` | toolchain of the build |
 | `merge-sha` | empty | commit to release, to resume a run that stopped halfway |
@@ -235,6 +237,16 @@ jobs:
   the build checks out and the GitHub Release. Letters, digits, `.`, `_`, `-` and `/` only,
   starting with a letter or a digit, without `..`, `//`, `/.` or `.lock/`: the workflow
   checks it with the planner's rule before it plans, tags or releases anything.
+- A `package-dir` other than `.` scopes the release to the package: the planner reads only
+  the commits touching `package-dir` or one of the `shared-paths`
+  (`git log --no-merges --full-history <range> -- <paths>`) to pick the version, raise a
+  declared break to a major, and write the changelog and the notes, so another package's
+  pull requests never reach it. A labelled merge touching none of those paths fails the
+  plan with "nothing to release: no commits touching ..." before any tag is written. A
+  monorepo caller can add the same paths to its `pull_request` trigger so such a merge does
+  not run the package's release at all. A root package passes no path and ships every
+  commit, as before. No path may be absolute, hold `..`, or start with `-` or `:`; the
+  planner refuses one before it reads git.
 - The build checks out the tag with its full history, so a version read from git (hatch-vcs,
   setuptools-scm) is the tag's. A wheel with any other version fails the build instead of
   burning a version on the index.
