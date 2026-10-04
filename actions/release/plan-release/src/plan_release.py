@@ -13,13 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
-from release_tags import (
-    DEFAULT_TAG_PREFIX,
-    TagPrefixError,
-    check_tag_prefix,
-    release_tag_glob,
-    release_tag_pattern,
+from release_scope import (
+    DEFAULT_SCOPE,
+    ReleaseScope,
+    ReleaseScopeError,
+    add_scope_arguments,
+    scope_of,
 )
+from release_tags import DEFAULT_TAG_PREFIX, release_tag_glob, release_tag_pattern
 
 _PARTS: Final[tuple[str, ...]] = ("major", "minor", "patch")
 _DEFAULT_CONFIG: Final[Path] = Path("pyproject.toml")
@@ -262,22 +263,17 @@ def shipped_commits(repository: Path, last_tag: str | None, merge_sha: str) -> t
 
 
 def breaking_commits(
-    repository: Path, merge_sha: str, tag_prefix: str = DEFAULT_TAG_PREFIX
+    repository: Path, merge_sha: str, scope: ReleaseScope = DEFAULT_SCOPE
 ) -> tuple[str, ...]:
-    """Return the commits since the last *tag_prefix* release that declare a break.
+    """Return the commits since the last release of *scope* that declare a break.
 
     The range is the one :func:`plan_release` ships: from the highest release
     tag before *merge_sha* to *merge_sha*, or the whole history without a tag.
 
     Raises:
-        ReleasePlanError: When *tag_prefix* is not allowed or git cannot read
-            the range.
+        ReleasePlanError: When git cannot read the range.
     """
-    try:
-        check_tag_prefix(tag_prefix)
-    except TagPrefixError as error:
-        raise ReleasePlanError(str(error)) from error
-    last_tag = latest_release_tag(repository, merge_sha, tag_prefix)
+    last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
     return tuple(
         sha
         for sha in shipped_commits(repository, last_tag, merge_sha)
@@ -346,7 +342,7 @@ def plan_release(
     commit_pull_requests: CommitPullRequests,
     *,
     config: Path = _DEFAULT_CONFIG,
-    tag_prefix: str = DEFAULT_TAG_PREFIX,
+    scope: ReleaseScope = DEFAULT_SCOPE,
 ) -> ReleasePlan:
     """Return the release *merge_sha* ships, from the branches merged since the last tag.
 
@@ -364,22 +360,17 @@ def plan_release(
         commit_pull_requests: Reader of the head refs a commit came from.
         config:               TOML file holding the branch rules, relative to
             *repository* unless absolute.
-        tag_prefix:           Prefix of the release tags this release line reads,
-            ``v`` unless a monorepo package releases under its own.
+        scope:                Release line the release belongs to: the tags it
+            reads, ``v`` unless a monorepo package releases under its own.
 
     Returns:
         The planned release.
 
     Raises:
-        ReleasePlanError: When *tag_prefix* is not allowed, the range is empty,
-            *config* does not exist, a commit has no pull request, a branch is
+        ReleasePlanError: When the range is empty, *config* does not exist, a commit has no pull request, a branch is
             unclassified, or nothing in the range ships a version.
     """
-    try:
-        check_tag_prefix(tag_prefix)
-    except TagPrefixError as error:
-        raise ReleasePlanError(str(error)) from error
-    last_tag = latest_release_tag(repository, merge_sha, tag_prefix)
+    last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
     commits = shipped_commits(repository, last_tag, merge_sha)
     if not commits:
         raise ReleasePlanError(
@@ -397,7 +388,9 @@ def plan_release(
             "nothing to release: every branch since "
             f"{last_tag or 'the start of history'} belongs to a class that ships no version"
         )
-    return ReleasePlan(last_tag, part, next_version(last_tag, part, tag_prefix), tuple(shipped))
+    return ReleasePlan(
+        last_tag, part, next_version(last_tag, part, scope.tag_prefix), tuple(shipped)
+    )
 
 
 def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
@@ -411,11 +404,7 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
         help="TOML file declaring [tool.semantic_branch], relative to --repository; "
         "empty means pyproject.toml",
     )
-    parser.add_argument(
-        "--tag-prefix",
-        default=DEFAULT_TAG_PREFIX,
-        help="prefix of the release tags to read, before the version; v by default",
-    )
+    add_scope_arguments(parser)
     parser.add_argument(
         "--format",
         choices=("text", "github"),
@@ -438,9 +427,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
             options.merge_sha,
             gh_commit_pull_requests(options.slug),
             config=Path(options.semantic_branch_config or _DEFAULT_CONFIG),
-            tag_prefix=options.tag_prefix,
+            scope=scope_of(options),
         )
-    except ReleasePlanError as error:
+    except (ReleaseScopeError, ReleasePlanError) as error:
         _fail(str(error))
     if options.format == "github":
         print(json.dumps({"version": plan.version, "part": plan.part}))

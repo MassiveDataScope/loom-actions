@@ -23,6 +23,7 @@ from build_release_notes import (  # noqa: E402
     release_entries,
     render_release_notes,
 )
+from release_scope import ReleaseScope  # noqa: E402
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -148,16 +149,24 @@ class TestTagPrefix:
         _commit(repository, "feat: api")
         _git(repository, "tag", "api-v1.11.0")
 
-        notes = build_release_notes(repository, "1.11.0", "api-v")
+        notes = build_release_notes(repository, "1.11.0", ReleaseScope("api-v"))
 
         assert "Changes since api-v1.10.0:" in notes
         assert "- feat: api\n- fix: worker\n" in notes
 
-    def test_refuses_an_unsafe_prefix(self, tmp_path: Path) -> None:
+    def test_refuses_an_unsafe_prefix(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         repository = _repository(tmp_path)
+        output = tmp_path / "notes.md"
+        arguments = ["--repository", str(repository), "--version", "1.0.0"]
 
-        with pytest.raises(ReleaseNotesError, match="is not allowed"):
-            build_release_notes(repository, "1.0.0", "v`id`")
+        with pytest.raises(SystemExit) as exited:
+            main([*arguments, "--output", str(output), "--tag-prefix=v`id`"])
+
+        assert exited.value.code == 1
+        assert "release notes failed: tag prefix 'v`id`' is not allowed" in capsys.readouterr().err
+        assert not output.exists()
 
     def test_default_prefix_notes_are_identical(self, tmp_path: Path) -> None:
         repository = _repository(tmp_path)

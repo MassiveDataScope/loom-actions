@@ -41,6 +41,7 @@ from changelog_file import (  # noqa: E402
     update_changelog,
 )
 from plan_release import PullRequest, gh_commit_merged_pull_requests  # noqa: E402
+from release_scope import ReleaseScope  # noqa: E402
 
 URL = "https://github.com/acme/repo"
 DATE = "2026-10-04"
@@ -541,7 +542,7 @@ class TestBuildChangelog:
             "0.1.0",
             _reader(pull_requests),
             changelog_file="apps/control-plane/CHANGELOG.md",
-            tag_prefix="control-plane/v",
+            scope=ReleaseScope("control-plane/v"),
             repository_url="https://github.com/MassiveDataScope/periplo-cloud",
         )
 
@@ -570,7 +571,7 @@ class TestBuildChangelog:
             "0.2.0",
             _reader({merge: (PullRequest(2, "feat: one"),)}),
             changelog_file="CHANGELOG.md",
-            tag_prefix="v",
+            scope=ReleaseScope("v"),
             repository_url=URL,
         )
 
@@ -590,24 +591,28 @@ class TestBuildChangelog:
             "0.1.0",
             _reader(renamed),
             changelog_file="apps/control-plane/CHANGELOG.md",
-            tag_prefix="control-plane/v",
+            scope=ReleaseScope("control-plane/v"),
             repository_url="https://github.com/MassiveDataScope/periplo-cloud",
         )
 
         assert text == PERIPLO_CHANGELOG
 
-    def test_an_unsafe_prefix_is_refused(self, tmp_path: Path) -> None:
+    def test_an_unsafe_prefix_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         repository = _repository(tmp_path)
-        with pytest.raises(ChangelogError, match="tag prefix"):
-            build_changelog(
-                repository,
-                "HEAD",
-                "0.1.0",
-                _reader({}),
-                changelog_file="CHANGELOG.md",
-                tag_prefix="-v",
-                repository_url=URL,
+        with pytest.raises(SystemExit) as exited:
+            main(
+                [
+                    *("--repository", str(repository), "--merge-sha", "HEAD", "--slug", "o/r"),
+                    *("--version", "0.1.0", "--changelog-file", "CHANGELOG.md"),
+                    *("--notes-output", str(tmp_path / "notes.md"), "--tag-prefix=-v"),
+                ]
             )
+
+        assert exited.value.code == 1
+        assert "changelog failed: tag prefix '-v' is not allowed" in capsys.readouterr().err
+        assert not (repository / "CHANGELOG.md").exists()
 
 
 class TestMain:

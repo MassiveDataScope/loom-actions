@@ -9,13 +9,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NoReturn
 
-from release_tags import (
-    DEFAULT_TAG_PREFIX,
-    TagPrefixError,
-    check_tag_prefix,
-    release_tag_glob,
-    release_tag_pattern,
+from release_scope import (
+    DEFAULT_SCOPE,
+    ReleaseScope,
+    ReleaseScopeError,
+    add_scope_arguments,
+    scope_of,
 )
+from release_tags import DEFAULT_TAG_PREFIX, release_tag_glob, release_tag_pattern
 
 
 class ReleaseNotesError(RuntimeError):
@@ -84,15 +85,9 @@ def render_release_notes(version: str, last_tag: str | None, entries: Sequence[s
     return f"# 🚀 Release {version}\n\n{since}\n\n{listed}\n"
 
 
-def build_release_notes(
-    repository: Path, version: str, tag_prefix: str = DEFAULT_TAG_PREFIX
-) -> str:
-    """Return the notes for every commit between the last reachable *tag_prefix* tag and HEAD."""
-    try:
-        check_tag_prefix(tag_prefix)
-    except TagPrefixError as error:
-        raise ReleaseNotesError(str(error)) from error
-    last_tag = latest_release_tag(repository, tag_prefix)
+def build_release_notes(repository: Path, version: str, scope: ReleaseScope = DEFAULT_SCOPE) -> str:
+    """Return the notes for every commit between the last reachable tag of *scope* and HEAD."""
+    last_tag = latest_release_tag(repository, scope.tag_prefix)
     return render_release_notes(version, last_tag, release_entries(repository, last_tag))
 
 
@@ -103,11 +98,7 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument("--version", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument(
-        "--tag-prefix",
-        default=DEFAULT_TAG_PREFIX,
-        help="prefix of the release tags to read, before the version; v by default",
-    )
+    add_scope_arguments(parser)
     return parser.parse_args(arguments)
 
 
@@ -119,8 +110,8 @@ def _fail(message: str) -> NoReturn:
 def main(arguments: Sequence[str] | None = None) -> int:
     options = _parse_args(arguments)
     try:
-        notes = build_release_notes(options.repository, options.version, options.tag_prefix)
-    except ReleaseNotesError as error:
+        notes = build_release_notes(options.repository, options.version, scope_of(options))
+    except (ReleaseScopeError, ReleaseNotesError) as error:
         _fail(str(error))
     options.output.write_text(notes, encoding="utf-8")
     return 0

@@ -21,6 +21,7 @@ from plan_release import (  # noqa: E402
     next_version,
     plan_release,
 )
+from release_scope import ReleaseScope, ReleaseScopeError  # noqa: E402
 from release_tags import (  # noqa: E402
     TagPrefixError,
     check_tag_prefix,
@@ -392,7 +393,7 @@ class TestTagPrefix:
         refs = {merge: ("feat/api",)}
 
         plan = plan_release(
-            repository, merge, lambda sha: refs.get(sha, ("fix/x",)), tag_prefix="api-v"
+            repository, merge, lambda sha: refs.get(sha, ("fix/x",)), scope=ReleaseScope("api-v")
         )
 
         assert (plan.last_tag, plan.part, plan.version) == ("api-v1.10.0", "minor", "1.11.0")
@@ -407,7 +408,7 @@ class TestTagPrefix:
         _git(repository, "tag", "api-v2-v5.0.0")
         merge = _commit(repository, "fix: two")
 
-        plan = plan_release(repository, merge, lambda _sha: ("fix/x",), tag_prefix="api-v")
+        plan = plan_release(repository, merge, lambda _sha: ("fix/x",), scope=ReleaseScope("api-v"))
 
         assert (plan.last_tag, plan.version) == ("api-v1.0.0", "1.0.1")
 
@@ -418,7 +419,9 @@ class TestTagPrefix:
         _git(repository, "tag", "v1.10.0")
         merge = _commit(repository, "feat: first")
 
-        plan = plan_release(repository, merge, lambda _sha: ("feat/x",), tag_prefix="api-v")
+        plan = plan_release(
+            repository, merge, lambda _sha: ("feat/x",), scope=ReleaseScope("api-v")
+        )
 
         assert (plan.last_tag, plan.version) == (None, "0.1.0")
 
@@ -427,7 +430,9 @@ class TestTagPrefix:
         _git(repository, "tag", "apps/api/v0.3.0")
         merge = _commit(repository, "fix: one")
 
-        plan = plan_release(repository, merge, lambda _sha: ("fix/x",), tag_prefix="apps/api/v")
+        plan = plan_release(
+            repository, merge, lambda _sha: ("fix/x",), scope=ReleaseScope("apps/api/v")
+        )
 
         assert (plan.last_tag, plan.version) == ("apps/api/v0.3.0", "0.3.1")
 
@@ -437,7 +442,9 @@ class TestTagPrefix:
         merge = _commit(repository, "feat: one")
         _git(repository, "tag", "api-v1.11.0", merge)
 
-        plan = plan_release(repository, merge, lambda _sha: ("feat/x",), tag_prefix="api-v")
+        plan = plan_release(
+            repository, merge, lambda _sha: ("feat/x",), scope=ReleaseScope("api-v")
+        )
 
         assert (plan.last_tag, plan.version) == ("api-v1.10.0", "1.11.0")
 
@@ -447,8 +454,8 @@ class TestTagPrefix:
         repository = _repository(tmp_path, _rules_toml())
         merge = _commit(repository, "fix: one")
 
-        with pytest.raises(ReleasePlanError, match="is not allowed"):
-            plan_release(repository, merge, lambda _sha: ("fix/x",), tag_prefix="v;id")
+        with pytest.raises(ReleaseScopeError, match="is not allowed"):
+            ReleaseScope("v;id")
         with pytest.raises(SystemExit) as exited:
             main(
                 [

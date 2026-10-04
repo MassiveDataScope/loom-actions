@@ -66,7 +66,13 @@ from plan_release import (
     latest_release_tag,
     shipped_commits,
 )
-from release_tags import DEFAULT_TAG_PREFIX, TagPrefixError, check_tag_prefix
+from release_scope import (
+    DEFAULT_SCOPE,
+    ReleaseScope,
+    ReleaseScopeError,
+    add_scope_arguments,
+    scope_of,
+)
 
 SECTIONS: Final[tuple[str, ...]] = (
     "Added",
@@ -361,29 +367,28 @@ def build_changelog(
     pull_requests: CommitMergedPullRequests,
     *,
     changelog_file: str,
-    tag_prefix: str = DEFAULT_TAG_PREFIX,
+    scope: ReleaseScope = DEFAULT_SCOPE,
     repository_url: str,
 ) -> tuple[str, str]:
     """Return the changelog with the release *merge_sha* ships, and its notes.
 
     Raises:
-        ChangelogError: When the prefix or the file is not allowed, git cannot
-            read the range, the file does not keep a changelog, or a title is
-            not a Conventional Commits header with a known type.
+        ChangelogError: When the file is not allowed, git cannot read the range,
+            the file does not keep a changelog, or a title is not a
+            Conventional Commits header with a known type.
     """
     path = repository / check_changelog_file(changelog_file)
     try:
-        check_tag_prefix(tag_prefix)
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         if (found := ChangelogDocument.parse(text).notes(version)) is not None:
             return text, found
-        last_tag = latest_release_tag(repository, merge_sha, tag_prefix)
+        last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
         changes = shipped_changes(repository, last_tag, merge_sha, pull_requests, repository_url)
         date = release_date(repository, merge_sha)
-    except (TagPrefixError, ReleasePlanError) as error:
+    except ReleasePlanError as error:
         raise ChangelogError(str(error)) from error
     entries = [entry for change in changes if (entry := classify(change)) is not None]
-    links = release_links(repository_url, tag_prefix, version, last_tag)
+    links = release_links(repository_url, scope.tag_prefix, version, last_tag)
     return update_changelog(text, version, render_section(version, date, entries), links)
 
 
@@ -395,11 +400,7 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--merge-sha", required=True)
     parser.add_argument("--slug", required=True, help="owner/repo the pull requests live in")
     parser.add_argument("--version", required=True)
-    parser.add_argument(
-        "--tag-prefix",
-        default=DEFAULT_TAG_PREFIX,
-        help="prefix of the release tags to read, before the version; v by default",
-    )
+    add_scope_arguments(parser)
     parser.add_argument(
         "--changelog-file", required=True, help="CHANGELOG.md to update, relative to the root"
     )
@@ -425,10 +426,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
             options.version,
             gh_commit_merged_pull_requests(options.slug),
             changelog_file=options.changelog_file,
-            tag_prefix=options.tag_prefix,
+            scope=scope_of(options),
             repository_url=f"{options.server_url.rstrip('/')}/{options.slug}",
         )
-    except ChangelogError as error:
+    except (ReleaseScopeError, ChangelogError) as error:
         _fail(str(error))
     path = options.repository / check_changelog_file(options.changelog_file)
     changed = not path.is_file() or path.read_text(encoding="utf-8") != text
