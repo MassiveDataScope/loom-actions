@@ -9,8 +9,10 @@ did. With paths it ships only the commits that change one of them: a package
 of a monorepo names its directory and the files it shares with the others,
 such as ``uv.lock``, so another package's pull requests never raise its
 version nor reach its changelog. A path is a directory or file relative to the
-root of the checkout; it may not leave the checkout, be read as an option
-(``-``) or as git pathspec magic (``:``).
+root of the checkout, read literally: :mod:`release_history` runs git with
+``GIT_LITERAL_PATHSPECS=1``, so ``apps/*`` names a directory called ``*``, not
+a glob. It may not leave the checkout nor start with ``-``, which git would read
+as an option, or ``:``, which reads as pathspec magic outside literal mode.
 """
 
 from __future__ import annotations
@@ -96,7 +98,9 @@ class ReleaseScope:
         ``--full-history`` keeps every commit that changes a path, the way the
         unscoped range keeps every commit: without it git would drop a merged
         branch whose changes to the paths cancel out. Unscoped, there are none,
-        so the command is the one it always was.
+        so the command is the one it always was. The paths are literal only
+        when git runs with ``GIT_LITERAL_PATHSPECS=1``, as
+        :func:`release_history.run` does.
         """
         return ("--full-history", "--", *self.paths) if self.paths else ()
 
