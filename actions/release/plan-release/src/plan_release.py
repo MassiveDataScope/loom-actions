@@ -50,6 +50,14 @@ class NothingToRelease(ReleasePlanError):
     """
 
 
+class IgnoredBranchesOnly(ReleasePlanError):
+    """Raised when every branch since the last tag belongs to a class that ships no version.
+
+    The release still fails on it: a labelled merge of such branches is a
+    mistake. Its own class only lets a preview tell it from other refusals.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ShippedPullRequest:
     """One pull request the release ships, and the part its branch asks for."""
@@ -240,9 +248,11 @@ def plan_release(
     Raises:
         NothingToRelease: When *scope* has paths and no commit since the last
             tag, but its own changelog commits, touches them.
+        IgnoredBranchesOnly: When every branch in the range belongs to a class
+            that ships no version.
         ReleasePlanError: When the range holds no commit of *scope*, *config*
-            does not exist, a commit has no merged pull request, a branch is
-            unclassified, or nothing in the range ships a version.
+            does not exist, a commit has no merged pull request, or a branch is
+            unclassified.
         HistoryError:     When git or GitHub cannot read the range.
     """
     last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
@@ -260,7 +270,7 @@ def plan_release(
 
     part = highest_part(entry.part for entry in shipped)
     if part is None:
-        raise ReleasePlanError(
+        raise IgnoredBranchesOnly(
             "nothing to release: every branch since "
             f"{last_tag or 'the start of history'} belongs to a class that ships no version"
         )

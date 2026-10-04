@@ -16,7 +16,11 @@ other commit is read from GitHub as the release reads it. So the preview shows:
   yet, and this one, scoped to the paths of the package;
 - "no release" when no commit since the last tag touches those paths, or the
   error the release would stop on, word for word, such as a title that is not
-  a Conventional Commits header.
+  a Conventional Commits header;
+- "no release" too when the pull request's branch belongs to a class that ships
+  no version (``ci/``, ``chore/``, ``docs/``...) and the release would stop
+  because every branch since the last tag does: such a pull request is not
+  labelled for release, so the error it would stop on is quoted, not raised.
 
 It matches the release when both run the same plan-release source. The release
 runs the planner release-on-label pins, while the preview runs the one its
@@ -54,7 +58,14 @@ from pathlib import Path
 from typing import Final, NoReturn
 
 from changelog_file import ChangelogError, build_changelog
-from plan_release import NothingToRelease, ReleasePlanError, plan_release
+from plan_release import (
+    IgnoredBranchesOnly,
+    NothingToRelease,
+    ReleasePlanError,
+    branch_rules,
+    classify_branch,
+    plan_release,
+)
 from release_history import (
     CommitPullRequests,
     HistoryError,
@@ -166,7 +177,7 @@ def _fenced(text: str, info: str) -> str:
 class ReleasePreview:
     """What a labelled merge would release for one package.
 
-    Build it with :meth:`released`, :meth:`nothing` or :meth:`failed`.
+    Build it with :meth:`released`, :meth:`nothing`, :meth:`ignored` or :meth:`failed`.
 
     Attributes:
         tag_prefix: Prefix of the package's release tags.
@@ -180,6 +191,7 @@ class ReleasePreview:
         reason:     Why nothing would be released.
         touched:    Whether a commit of the pull request is in the release.
         scoped:     Whether the release is bounded by paths.
+        plain:      Whether *reason* is a line of its own rather than a clause.
     """
 
     tag_prefix: str
@@ -192,6 +204,7 @@ class ReleasePreview:
     reason: str = ""
     touched: bool = True
     scoped: bool = True
+    plain: bool = False
 
     @classmethod
     def released(
@@ -217,6 +230,11 @@ class ReleasePreview:
         return cls(tag_prefix, base_sha, reason=reason, touched=False)
 
     @classmethod
+    def ignored(cls, tag_prefix: str, base_sha: str, line: str) -> ReleasePreview:
+        """Return the preview of no release for a branch class that ships no version."""
+        return cls(tag_prefix, base_sha, reason=line, touched=False, plain=True)
+
+    @classmethod
     def failed(cls, tag_prefix: str, base_sha: str, error: str) -> ReleasePreview:
         """Return the preview of a release stopping on *error*."""
         return cls(tag_prefix, base_sha, error=error)
@@ -229,6 +247,8 @@ class ReleasePreview:
                 "A labelled merge would stop on this error before writing any tag:\n\n"
                 f"{_fenced(self.error, 'text')}"
             )
+        if not self.version and self.plain:
+            return f"### `{self.tag_prefix}`: no release\n\n{self.reason}\n"
         if not self.version:
             return (
                 f"### `{self.tag_prefix}`: no release\n\n"
@@ -255,6 +275,20 @@ class ReleasePreview:
         return "\n".join(lines)
 
 
+def _ships_no_version(repository: Path, config: Path, head_ref: str) -> bool:
+    try:
+        return classify_branch(head_ref, branch_rules(repository, config)) is None
+    except ReleasePlanError:
+        return False
+
+
+def _ignored_line(head_ref: str, refused: IgnoredBranchesOnly) -> str:
+    return (
+        f"no release: this pull request's branch class ships no version (`{head_ref}`); "
+        f"labelling it for release would stop the release with: release plan failed: {refused}"
+    )
+
+
 def _preview(
     repository: Path,
     merge: PullRequestMerge,
@@ -272,6 +306,12 @@ def _preview(
         plan = plan_release(repository, merge.sha, shipping, config=config, scope=scope)
     except NothingToRelease as nothing:
         return ReleasePreview.nothing(scope.tag_prefix, merge.base, str(nothing))
+    except IgnoredBranchesOnly as refused:
+        # A labelled merge of a versioned branch over them would stop: that shows as a failure.
+        if not _ships_no_version(repository, config, pull_request.head_ref):
+            raise
+        line = _ignored_line(pull_request.head_ref, refused)
+        return ReleasePreview.ignored(scope.tag_prefix, merge.base, line)
     update = build_changelog(
         repository,
         merge.sha,
