@@ -15,7 +15,6 @@ The standards each test pins:
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -40,7 +39,7 @@ from changelog_file import (  # noqa: E402
     shipped_changes,
     update_changelog,
 )
-from plan_release import PullRequest, gh_commit_merged_pull_requests  # noqa: E402
+from release_history import PullRequest  # noqa: E402
 from release_scope import ReleaseScope  # noqa: E402
 
 URL = "https://github.com/acme/repo"
@@ -374,6 +373,10 @@ class TestCheckChangelogFile:
             check_changelog_file(path)
 
 
+def _pr(number: int, title: str, merged: bool = True) -> PullRequest:
+    return PullRequest(number, title, f"branch/{number}", merged)
+
+
 def _reader(pull_requests: dict[str, tuple[PullRequest, ...]]):  # type: ignore[no-untyped-def]
     return lambda sha: pull_requests.get(sha, ())
 
@@ -392,7 +395,7 @@ class TestShippedChanges:
             _commit(repository, 'revert: "feat(api): first try"'),
             _commit(repository, "feat(api): the endpoint"),
         ]
-        pull_request = PullRequest(number=12, title=title)
+        pull_request = _pr(number=12, title=title)
 
         changes = shipped_changes(
             repository, "v0.1.0", shas[-1], _reader(dict.fromkeys(shas, (pull_request,))), URL
@@ -405,7 +408,7 @@ class TestShippedChanges:
         _git(repository, "tag", "v0.1.0")
         first = _commit(repository, "feat: one")
         marked = _commit(repository, "fix: two\n\nBREAKING CHANGE: the field is gone")
-        pull_request = PullRequest(number=3, title="feat: one and two")
+        pull_request = _pr(number=3, title="feat: one and two")
 
         (change,) = shipped_changes(
             repository,
@@ -429,14 +432,26 @@ class TestShippedChanges:
             earlier,
             _reader(
                 {
-                    later: (PullRequest(9, "fix: later"),),
-                    earlier: (PullRequest(4, "feat: earlier"),),
+                    later: (_pr(9, "fix: later"),),
+                    earlier: (_pr(4, "feat: earlier"),),
                 }
             ),
             URL,
         )
 
         assert [change.title for change in changes] == ["feat: earlier", "fix: later"]
+
+    def test_a_pull_request_closed_without_merging_is_not_listed(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v0.1.0")
+        merge = _commit(repository, "feat: one")
+        closed = _pr(8, "feat: tried and abandoned", merged=False)
+
+        changes = shipped_changes(
+            repository, "v0.1.0", merge, _reader({merge: (closed, _pr(9, "feat: one"))}), URL
+        )
+
+        assert [change.title for change in changes] == ["feat: one"]
 
     def test_a_commit_without_a_pull_request_is_listed_by_its_subject(self, tmp_path: Path) -> None:
         repository = _repository(tmp_path)
@@ -458,35 +473,10 @@ class TestShippedChanges:
         merge = _commit(repository, "feat: one")
 
         changes = shipped_changes(
-            repository, "v0.1.0", merge, _reader({merge: (PullRequest(5, "feat: one"),)}), URL
+            repository, "v0.1.0", merge, _reader({merge: (_pr(5, "feat: one"),)}), URL
         )
 
         assert [change.title for change in changes] == ["feat: one"]
-
-
-class TestGhCommitMergedPullRequests:
-    def test_reads_the_number_and_title_of_the_merged_pull_requests(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        log = tmp_path / "gh.log"
-        answer = [{"number": 1, "title": 'feat: a "quoted"\ttitle \\ here'}]
-        gh = bin_dir / "gh"
-        gh.write_text(
-            f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{log}"\ncat <<\'JSON\'\n'
-            f"{json.dumps(answer)}\nJSON\n",
-            encoding="utf-8",
-        )
-        gh.chmod(0o755)
-        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-
-        read = gh_commit_merged_pull_requests("acme/repo")
-
-        assert read("abc") == (PullRequest(1, 'feat: a "quoted"\ttitle \\ here'),)
-        arguments = log.read_text("utf-8").splitlines()
-        assert arguments[:2] == ["api", "repos/acme/repo/commits/abc/pulls"]
-        assert "select(.merged_at != null)" in arguments[3]
 
 
 # periplo-cloud's first control-plane release: PR #1 merged on 2026-10-04 with a
@@ -529,7 +519,7 @@ def _periplo(tmp_path: Path) -> tuple[Path, str, dict[str, tuple[PullRequest, ..
     (repository / "apps" / "control-plane").mkdir(parents=True)
     shas = [_commit(repository, message) for message in PERIPLO_COMMITS]
     title = "feat(control-plane): S0 skeleton of the control plane (016c-1)"
-    return repository, shas[-1], dict.fromkeys(shas, (PullRequest(1, title),))
+    return repository, shas[-1], dict.fromkeys(shas, (_pr(1, title),))
 
 
 class TestBuildChangelog:
@@ -569,7 +559,7 @@ class TestBuildChangelog:
             repository,
             merge,
             "0.2.0",
-            _reader({merge: (PullRequest(2, "feat: one"),)}),
+            _reader({merge: (_pr(2, "feat: one"),)}),
             changelog_file="CHANGELOG.md",
             scope=ReleaseScope("v"),
             repository_url=URL,
@@ -583,7 +573,7 @@ class TestBuildChangelog:
         repository, merge, pull_requests = _periplo(tmp_path)
         target = repository / "apps" / "control-plane" / "CHANGELOG.md"
         target.write_text(PERIPLO_CHANGELOG, "utf-8")
-        renamed = {sha: (PullRequest(1, "S0 skeleton"),) for sha in pull_requests}
+        renamed = {sha: (_pr(1, "S0 skeleton"),) for sha in pull_requests}
 
         text, _ = build_changelog(
             repository,
@@ -654,10 +644,10 @@ class TestPathScope:
         )
         both_first = _git(repository, "rev-parse", "HEAD~1")
         readers = {
-            mine: (PullRequest(1, "feat(app-a): one"),),
-            other: (PullRequest(2, "fix(app-b): two"),),
-            both_first: (PullRequest(3, "fix: three"),),
-            both: (PullRequest(3, "fix: three"),),
+            mine: (_pr(1, "feat(app-a): one"),),
+            other: (_pr(2, "fix(app-b): two"),),
+            both_first: (_pr(3, "fix: three"),),
+            both: (_pr(3, "fix: three"),),
         }
 
         _, notes = self._build(repository, both, readers)
@@ -675,7 +665,7 @@ class TestPathScope:
         _touch(repository, "apps/app-b/CHANGELOG.md", "# Changelog\n")
         mine = _touch(repository, "apps/app-a/src.py", "fix(app-a): one")
 
-        _, notes = self._build(repository, mine, {mine: (PullRequest(4, "fix(app-a): one"),)})
+        _, notes = self._build(repository, mine, {mine: (_pr(4, "fix(app-a): one"),)})
 
         assert f"- **app-a:** one ([#4]({URL}/pull/4))" in notes
 
@@ -689,7 +679,7 @@ class TestMain:
     ) -> tuple[int, str, Path, Path]:
         repository, merge, pull_requests = _periplo(tmp_path)
         monkeypatch.setattr(
-            "changelog_file.gh_commit_merged_pull_requests", lambda _slug: _reader(pull_requests)
+            "changelog_file.gh_commit_pull_requests", lambda _slug: _reader(pull_requests)
         )
         monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
         notes = tmp_path / "CHANGELOG_RELEASE.md"

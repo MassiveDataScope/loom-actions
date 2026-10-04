@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from plan_release import ReleasePlanError, breaking_commits
+from release_history import HistoryError
 from release_scope import ReleaseScopeError, add_scope_arguments, scope_of
 
 
@@ -31,7 +32,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     options = _parse_args(arguments)
     try:
         marked = breaking_commits(options.repository, options.merge_sha, scope_of(options))
-    except (ReleaseScopeError, ReleasePlanError) as error:
+    except (ReleaseScopeError, ReleasePlanError, HistoryError) as error:
         print(f"break detection failed: {error}", file=sys.stderr)
         return 1
     for sha in marked:

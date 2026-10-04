@@ -166,7 +166,17 @@ class TestTheChangelogStep:
         repository, merge = _repository(tmp_path)
         output = tmp_path / "github_output"
         env = {
-            "PATH": _stub_gh(tmp_path, [{"number": 4, "title": "feat(api): add one"}]),
+            "PATH": _stub_gh(
+                tmp_path,
+                [
+                    {
+                        "number": 4,
+                        "title": "feat(api): add one",
+                        "head_ref": "feat/one",
+                        "merged": True,
+                    }
+                ],
+            ),
             "MERGE_SHA": merge,
             "REPOSITORY_SLUG": "acme/repo",
             "VERSION": "1.11.0",

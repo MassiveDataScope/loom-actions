@@ -54,18 +54,19 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
-from plan_release import (
+from plan_release import declares_break
+from release_history import (
     CHANGELOG_NAME,
-    CommitMergedPullRequests,
+    CommitPullRequests,
+    HistoryError,
     PullRequest,
-    ReleasePlanError,
     changes_only_changelogs,
     commit_message,
     commit_timestamp,
-    declares_break,
-    gh_commit_merged_pull_requests,
+    gh_commit_pull_requests,
     latest_release_tag,
-    shipped_commits,
+    merged_pull_requests,
+    range_log,
 )
 from release_scope import (
     DEFAULT_SCOPE,
@@ -207,7 +208,7 @@ def shipped_changes(
     repository: Path,
     last_tag: str | None,
     merge_sha: str,
-    pull_requests: CommitMergedPullRequests,
+    pull_requests: CommitPullRequests,
     repository_url: str,
     scope: ReleaseScope = DEFAULT_SCOPE,
 ) -> tuple[Change, ...]:
@@ -222,8 +223,8 @@ def shipped_changes(
     """
     merged: dict[int, tuple[PullRequest, bool]] = {}
     lone: list[Change] = []
-    for sha in reversed(shipped_commits(repository, last_tag, merge_sha, scope)):
-        found = pull_requests(sha)
+    for sha in reversed(range_log(repository, last_tag, merge_sha, scope)):
+        found = merged_pull_requests(pull_requests, sha)
         if not found and changes_only_changelogs(repository, sha):
             continue
         message = commit_message(repository, sha)
@@ -369,7 +370,7 @@ def build_changelog(
     repository: Path,
     merge_sha: str,
     version: str,
-    pull_requests: CommitMergedPullRequests,
+    pull_requests: CommitPullRequests,
     *,
     changelog_file: str,
     scope: ReleaseScope = DEFAULT_SCOPE,
@@ -392,7 +393,7 @@ def build_changelog(
             repository, last_tag, merge_sha, pull_requests, repository_url, scope
         )
         date = release_date(repository, merge_sha)
-    except ReleasePlanError as error:
+    except HistoryError as error:
         raise ChangelogError(str(error)) from error
     entries = [entry for change in changes if (entry := classify(change)) is not None]
     links = release_links(repository_url, scope.tag_prefix, version, last_tag)
@@ -431,7 +432,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             options.repository,
             options.merge_sha,
             options.version,
-            gh_commit_merged_pull_requests(options.slug),
+            gh_commit_pull_requests(options.slug),
             changelog_file=options.changelog_file,
             scope=scope_of(options),
             repository_url=f"{options.server_url.rstrip('/')}/{options.slug}",

@@ -68,7 +68,8 @@ def _gh(bin_dir: Path) -> str:
     """Put a ``gh`` on PATH that names a ``feat/`` branch for every commit."""
     bin_dir.mkdir()
     gh = bin_dir / "gh"
-    gh.write_text("#!/usr/bin/env bash\necho feat/change\n", encoding="utf-8")
+    answer = '[{"number": 1, "title": "chore: change", "head_ref": "feat/change", "merged": true}]'
+    gh.write_text(f"#!/usr/bin/env bash\necho '{answer}'\n", encoding="utf-8")
     gh.chmod(0o755)
     return f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 

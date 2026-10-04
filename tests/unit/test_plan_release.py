@@ -22,6 +22,7 @@ from plan_release import (  # noqa: E402
     next_version,
     plan_release,
 )
+from release_history import CommitPullRequests, PullRequest  # noqa: E402
 from release_scope import ReleaseScope, ReleaseScopeError  # noqa: E402
 from release_tags import (  # noqa: E402
     TagPrefixError,
@@ -36,6 +37,21 @@ _RULES = {
     "patch": ("hotfix/.*", "fix/.*", "refactor/.*", "perf/.*"),
     "release_ignore": ("wip/.*", "docs/.*", "chore/.*", "ci/.*", "test/.*", "build/.*"),
 }
+
+
+def _prs(
+    refs: Mapping[str, tuple[str, ...]] | None = None, default: tuple[str, ...] = ()
+) -> CommitPullRequests:
+    """Return a reader naming, for each commit, the merged pull requests of *refs*."""
+
+    def read(sha: str) -> tuple[PullRequest, ...]:
+        head_refs = (refs or {}).get(sha, default)
+        return tuple(
+            PullRequest(number, f"chore: {ref}", ref, True)
+            for number, ref in enumerate(head_refs, 1)
+        )
+
+    return read
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -154,7 +170,7 @@ class TestPlanRelease:
         third = _commit(repository, "ci: three")
         refs = {first: ("fix/one",), second: ("feat/two",), third: ("ci/three",)}
 
-        plan = plan_release(repository, third, lambda sha: refs[sha])
+        plan = plan_release(repository, third, _prs(refs))
 
         assert (plan.last_tag, plan.part, plan.version) == ("v1.10.0", "minor", "1.11.0")
         assert len(plan.shipped) == 3
@@ -166,7 +182,7 @@ class TestPlanRelease:
         fix = _commit(repository, "fix: two")
         refs = {feature: ("feat/one",), fix: ("fix/two",)}
 
-        plan = plan_release(repository, fix, lambda sha: refs[sha])
+        plan = plan_release(repository, fix, _prs(refs))
 
         assert plan.version == "1.11.0"
 
@@ -178,7 +194,7 @@ class TestPlanRelease:
         marked = _commit(repository, "feat(api)!: rename the field")
         refs = {marked: ("feat/rename",)}
 
-        plan = plan_release(repository, marked, lambda sha: refs[sha])
+        plan = plan_release(repository, marked, _prs(refs))
 
         assert (plan.part, plan.version) == ("major", "2.0.0")
 
@@ -188,7 +204,7 @@ class TestPlanRelease:
         marked = _commit(repository, "fix: drop the parameter\n\nBREAKING CHANGE: it is gone")
         refs = {marked: ("fix/drop",)}
 
-        plan = plan_release(repository, marked, lambda sha: refs[sha])
+        plan = plan_release(repository, marked, _prs(refs))
 
         assert (plan.part, plan.version) == ("major", "2.0.0")
 
@@ -200,7 +216,7 @@ class TestPlanRelease:
         marked = _commit(repository, "ci!: drop the published output")
         refs = {marked: ("ci/drop",)}
 
-        plan = plan_release(repository, marked, lambda sha: refs[sha])
+        plan = plan_release(repository, marked, _prs(refs))
 
         assert (plan.part, plan.version) == ("major", "2.0.0")
 
@@ -213,7 +229,7 @@ class TestPlanRelease:
         later = _commit(repository, "feat: two")
         refs = {marked: ("fix/one",), later: ("feat/two",)}
 
-        plan = plan_release(repository, marked, lambda sha: refs[sha])
+        plan = plan_release(repository, marked, _prs(refs))
 
         assert plan.version == "1.10.1"
 
@@ -225,7 +241,7 @@ class TestPlanRelease:
         _git(repository, "tag", "v1.11.0", marked)
         refs = {feature: ("feat/one",), marked: ("fix/two",)}
 
-        plan = plan_release(repository, marked, lambda sha: refs[sha])
+        plan = plan_release(repository, marked, _prs(refs))
 
         assert (plan.last_tag, plan.version) == ("v1.10.0", "1.11.0")
 
@@ -235,14 +251,14 @@ class TestPlanRelease:
         only = _commit(repository, "ci: one")
 
         with pytest.raises(ReleasePlanError, match="ships no version"):
-            plan_release(repository, only, lambda _sha: ("ci/one",))
+            plan_release(repository, only, _prs(default=("ci/one",)))
 
     def test_a_commit_carrying_the_only_tag_is_planned_from_the_start(self, tmp_path: Path) -> None:
         repository = _repository(tmp_path, _rules_toml())
         _git(repository, "tag", "v1.10.0")
         head = _git(repository, "rev-parse", "HEAD")
 
-        plan = plan_release(repository, head, lambda _sha: ("fix/x",))
+        plan = plan_release(repository, head, _prs(default=("fix/x",)))
 
         assert (plan.last_tag, plan.version) == (None, "0.0.1")
 
@@ -251,8 +267,21 @@ class TestPlanRelease:
         _git(repository, "tag", "v1.10.0")
         pushed = _commit(repository, "fix: direct")
 
-        with pytest.raises(ReleasePlanError, match="belongs to no pull request"):
-            plan_release(repository, pushed, lambda _sha: ())
+        with pytest.raises(ReleasePlanError, match="belongs to no merged pull request"):
+            plan_release(repository, pushed, _prs())
+
+    def test_a_pull_request_closed_without_merging_ships_nothing(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        fix = _commit(repository, "fix: one")
+        closed = PullRequest(1, "feat: tried", "feat/tried", False)
+        merged = PullRequest(2, "fix: one", "fix/one", True)
+
+        plan = plan_release(repository, fix, lambda _sha: (closed, merged))
+
+        assert (plan.part, [entry.head_ref for entry in plan.shipped]) == ("patch", ["fix/one"])
+        with pytest.raises(ReleasePlanError, match="belongs to no merged pull request"):
+            plan_release(repository, fix, lambda _sha: (closed,))
 
     def test_refuses_an_unclassified_branch_instead_of_lowering_the_part(
         self, tmp_path: Path
@@ -262,14 +291,14 @@ class TestPlanRelease:
         _commit(repository, "feat: one")
         marked = _commit(repository, "spike: two")
         with pytest.raises(ReleasePlanError, match="matches no class"):
-            plan_release(repository, marked, lambda _sha: ("spike/two",))
+            plan_release(repository, marked, _prs(default=("spike/two",)))
 
     def test_renders_every_shipped_branch_for_an_operator(self, tmp_path: Path) -> None:
         repository = _repository(tmp_path, _rules_toml())
         _git(repository, "tag", "v1.10.0")
         marked = _commit(repository, "feat: one")
 
-        rendered = plan_release(repository, marked, lambda _sha: ("feat/one",)).render()
+        rendered = plan_release(repository, marked, _prs(default=("feat/one",))).render()
 
         assert "version  : 1.11.0" in rendered
         assert "feat/one" in rendered
@@ -283,7 +312,9 @@ class TestSemanticBranchConfig:
         _git(repository, "tag", "v1.10.0")
         merge = _commit(repository, "feat: one")
         monkeypatch.setattr(
-            plan_release_module, "gh_commit_pull_requests", lambda _slug: lambda _sha: ("feat/one",)
+            plan_release_module,
+            "gh_commit_pull_requests",
+            lambda _slug: _prs(default=("feat/one",)),
         )
         base = ["--repository", str(repository), "--merge-sha", merge, "--slug", "o/r"]
 
@@ -309,12 +340,12 @@ class TestSemanticBranchConfig:
         merge = _commit(repository, "fix: one")
 
         plan = plan_release(
-            repository, merge, lambda _sha: ("fix/one",), config=Path("apps/api/pyproject.toml")
+            repository, merge, _prs(default=("fix/one",)), config=Path("apps/api/pyproject.toml")
         )
 
         assert (plan.part, plan.version) == ("patch", "1.10.1")
         with pytest.raises(ReleasePlanError, match="matches no class"):
-            plan_release(repository, merge, lambda _sha: ("fix/one",))
+            plan_release(repository, merge, _prs(default=("fix/one",)))
 
     def test_missing_config_raises_release_plan_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -325,7 +356,10 @@ class TestSemanticBranchConfig:
 
         with pytest.raises(ReleasePlanError, match="apps/api/pyproject.toml.*not found"):
             plan_release(
-                repository, merge, lambda _sha: ("fix/one",), config=Path("apps/api/pyproject.toml")
+                repository,
+                merge,
+                _prs(default=("fix/one",)),
+                config=Path("apps/api/pyproject.toml"),
             )
         with pytest.raises(SystemExit) as exited:
             main(
@@ -350,8 +384,7 @@ class TestSemanticBranchConfig:
         _git(repository, "tag", "v1.10.0")
         bump = _commit(repository, "build(deps): bump a dependency")
 
-        def head_refs(_sha: str) -> tuple[str, ...]:
-            return ("dependabot/pip/uv-0.9.0",)
+        head_refs = _prs(default=("dependabot/pip/uv-0.9.0",))
 
         assert classify_branch("dependabot/pip/uv-0.9.0", rules) is None
         with pytest.raises(ReleasePlanError, match="matches no class"):
@@ -393,9 +426,7 @@ class TestTagPrefix:
         merge = _commit(repository, "feat: api")
         refs = {merge: ("feat/api",)}
 
-        plan = plan_release(
-            repository, merge, lambda sha: refs.get(sha, ("fix/x",)), scope=ReleaseScope("api-v")
-        )
+        plan = plan_release(repository, merge, _prs(refs, ("fix/x",)), scope=ReleaseScope("api-v"))
 
         assert (plan.last_tag, plan.part, plan.version) == ("api-v1.10.0", "minor", "1.11.0")
         assert len(plan.shipped) == 2
@@ -409,7 +440,9 @@ class TestTagPrefix:
         _git(repository, "tag", "api-v2-v5.0.0")
         merge = _commit(repository, "fix: two")
 
-        plan = plan_release(repository, merge, lambda _sha: ("fix/x",), scope=ReleaseScope("api-v"))
+        plan = plan_release(
+            repository, merge, _prs(default=("fix/x",)), scope=ReleaseScope("api-v")
+        )
 
         assert (plan.last_tag, plan.version) == ("api-v1.0.0", "1.0.1")
 
@@ -421,7 +454,7 @@ class TestTagPrefix:
         merge = _commit(repository, "feat: first")
 
         plan = plan_release(
-            repository, merge, lambda _sha: ("feat/x",), scope=ReleaseScope("api-v")
+            repository, merge, _prs(default=("feat/x",)), scope=ReleaseScope("api-v")
         )
 
         assert (plan.last_tag, plan.version) == (None, "0.1.0")
@@ -432,7 +465,7 @@ class TestTagPrefix:
         merge = _commit(repository, "fix: one")
 
         plan = plan_release(
-            repository, merge, lambda _sha: ("fix/x",), scope=ReleaseScope("apps/api/v")
+            repository, merge, _prs(default=("fix/x",)), scope=ReleaseScope("apps/api/v")
         )
 
         assert (plan.last_tag, plan.version) == ("apps/api/v0.3.0", "0.3.1")
@@ -444,7 +477,7 @@ class TestTagPrefix:
         _git(repository, "tag", "api-v1.11.0", merge)
 
         plan = plan_release(
-            repository, merge, lambda _sha: ("feat/x",), scope=ReleaseScope("api-v")
+            repository, merge, _prs(default=("feat/x",)), scope=ReleaseScope("api-v")
         )
 
         assert (plan.last_tag, plan.version) == ("api-v1.10.0", "1.11.0")
@@ -480,7 +513,9 @@ class TestTagPrefix:
         _git(repository, "tag", "api-v4.0.0")
         merge = _commit(repository, "feat: one")
         monkeypatch.setattr(
-            plan_release_module, "gh_commit_pull_requests", lambda _slug: lambda _sha: ("feat/one",)
+            plan_release_module,
+            "gh_commit_pull_requests",
+            lambda _slug: _prs(default=("feat/one",)),
         )
         base = ["--repository", str(repository), "--merge-sha", merge, "--slug", "o/r"]
 
@@ -523,7 +558,7 @@ class TestChangelogCommits:
         merge = _commit(repository, "feat: one")
         refs = {changelog: (), merge: ("feat/one",)}
 
-        plan = plan_release(repository, merge, lambda sha: refs[sha])
+        plan = plan_release(repository, merge, _prs(refs))
 
         assert plan.version == "1.11.0"
         assert [entry.sha for entry in plan.shipped] == [merge]
@@ -536,8 +571,8 @@ class TestChangelogCommits:
         _git(repository, "tag", "v1.10.0")
         pushed = self._changelog_commit(repository, *paths)
 
-        with pytest.raises(ReleasePlanError, match="belongs to no pull request"):
-            plan_release(repository, pushed, lambda _sha: ())
+        with pytest.raises(ReleasePlanError, match="belongs to no merged pull request"):
+            plan_release(repository, pushed, _prs())
 
     def test_a_range_holding_only_a_changelog_commit_ships_nothing(self, tmp_path: Path) -> None:
         repository = _repository(tmp_path, _rules_toml())
@@ -545,7 +580,7 @@ class TestChangelogCommits:
         changelog = self._changelog_commit(repository, "CHANGELOG.md")
 
         with pytest.raises(ReleasePlanError, match="nothing to release"):
-            plan_release(repository, changelog, lambda _sha: ())
+            plan_release(repository, changelog, _prs())
 
 
 def _touch(repository: Path, path: str, message: str) -> str:
@@ -573,7 +608,7 @@ class TestPathScope:
         feature = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
         refs = {fix: ("fix/one",), feature: ("feat/two",)}
 
-        plan = plan_release(repository, feature, lambda sha: refs[sha], scope=self.APP_A)
+        plan = plan_release(repository, feature, _prs(refs), scope=self.APP_A)
 
         assert (plan.part, plan.version) == ("patch", "0.1.1")
         assert [entry.sha for entry in plan.shipped] == [fix]
@@ -585,7 +620,7 @@ class TestPathScope:
         head = _git(repository, "rev-parse", "HEAD")
         refs = {lock: ("fix/lock",)}
 
-        plan = plan_release(repository, head, lambda sha: refs[sha], scope=self.APP_A)
+        plan = plan_release(repository, head, _prs(refs), scope=self.APP_A)
 
         assert [entry.sha for entry in plan.shipped] == [lock]
 
@@ -595,7 +630,7 @@ class TestPathScope:
         marked = _touch(repository, "apps/app-b/src.py", "feat(app-b)!: drop the field")
         refs = {fix: ("fix/one",), marked: ("feat/drop",)}
 
-        plan = plan_release(repository, marked, lambda sha: refs[sha], scope=self.APP_A)
+        plan = plan_release(repository, marked, _prs(refs), scope=self.APP_A)
 
         assert plan.part == "patch"
         assert breaking_commits(repository, marked, self.APP_A) == ()
@@ -606,7 +641,7 @@ class TestPathScope:
         other = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
 
         with pytest.raises(ReleasePlanError) as refused:
-            plan_release(repository, other, lambda _sha: ("feat/two",), scope=self.APP_A)
+            plan_release(repository, other, _prs(default=("feat/two",)), scope=self.APP_A)
 
         assert str(refused.value) == (
             "nothing to release: no commits touching apps/app-a, uv.lock since app-a/v0.1.0"
@@ -625,7 +660,7 @@ class TestPathScope:
         merge = _git(repository, "rev-parse", "HEAD")
         refs = {tried: ("feat/try",), undone: ("feat/try",)}
 
-        plan = plan_release(repository, merge, lambda sha: refs[sha], scope=self.APP_A)
+        plan = plan_release(repository, merge, _prs(refs), scope=self.APP_A)
 
         assert sorted(entry.sha for entry in plan.shipped) == sorted([tried, undone])
 
@@ -640,7 +675,7 @@ class TestPathScope:
         feature = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
         refs = {fix: ("fix/one",), feature: ("feat/two",)}
         monkeypatch.setattr(
-            plan_release_module, "gh_commit_pull_requests", lambda _slug: refs.__getitem__
+            plan_release_module, "gh_commit_pull_requests", lambda _slug: _prs(refs)
         )
         monkeypatch.setenv("RELEASE_PATHS", "apps/app-a\nuv.lock")
         base = ["--repository", str(repository), "--merge-sha", feature, "--slug", "o/r"]
@@ -675,7 +710,7 @@ class TestPathScope:
         feature = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
         refs = {fix: ("fix/one",), feature: ("feat/two",)}
         monkeypatch.setattr(
-            plan_release_module, "gh_commit_pull_requests", lambda _slug: refs.__getitem__
+            plan_release_module, "gh_commit_pull_requests", lambda _slug: _prs(refs)
         )
         base = ["--repository", str(repository), "--merge-sha", feature, "--slug", "o/r"]
 
