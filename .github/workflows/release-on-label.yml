@@ -151,6 +151,19 @@ jobs:
               ;;
           esac
 
+      # It names the working directory of the build and the changelog file:
+      # apps/api/ or apps//api would name apps/api//CHANGELOG.md.
+      - name: Require a valid package directory
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ inputs.package-dir }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PACKAGE_DIR}" ] && [[ ! "${PACKAGE_DIR}" =~ ^[^/]+(/[^/]+)*$ ]]; then
+            echo "package-dir '${PACKAGE_DIR}' is not allowed: name a directory relative to the root, without a leading or trailing '/' or an empty segment, such as apps/api, or '.' for the root"
+            exit 1
+          fi
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0

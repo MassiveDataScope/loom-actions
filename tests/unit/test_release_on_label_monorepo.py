@@ -248,3 +248,36 @@ def test_the_last_build_step_reports_the_distribution(tmp_path: Path) -> None:
     )
     assert result.returncode == 0
     assert outputs.read_text("utf-8") == "built=true\n"
+
+
+CHECK_PACKAGE_DIR = "Require a valid package directory"
+
+
+class TestThePackageDirIsChecked:
+    """A trailing ``/`` or an empty segment would name ``apps/api//CHANGELOG.md``."""
+
+    def _check(self, tmp_path: Path, package_dir: str) -> subprocess.CompletedProcess[str]:
+        return wf.run(NAME, "plan", CHECK_PACKAGE_DIR, {"PACKAGE_DIR": package_dir}, tmp_path)
+
+    def test_it_runs_before_the_checkout(self) -> None:
+        titles = [s.get("name", s.get("uses", "")) for s in wf.steps(NAME, "plan")]
+        checkout = next(i for i, t in enumerate(titles) if t.startswith("actions/checkout@"))
+        assert titles.index(CHECK_PACKAGE_DIR) < checkout
+        assert wf.step(NAME, "plan", CHECK_PACKAGE_DIR)["env"] == {"PACKAGE_DIR": PACKAGE_DIR}
+
+    @pytest.mark.parametrize("package_dir", [".", "", "apps/api", "apps/control-plane", "a"])
+    def test_a_directory_relative_to_the_root_is_accepted(
+        self, tmp_path: Path, package_dir: str
+    ) -> None:
+        result = self._check(tmp_path, package_dir)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize("package_dir", ["apps/api/", "apps//api", "/apps/api", "./", "/"])
+    def test_a_trailing_slash_or_an_empty_segment_is_refused(
+        self, tmp_path: Path, package_dir: str
+    ) -> None:
+        result = self._check(tmp_path, package_dir)
+
+        assert result.returncode != 0
+        assert f"package-dir '{package_dir}' is not allowed" in result.stdout
