@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "actions" / "release" / "plan
 
 import plan_release as plan_release_module  # noqa: E402
 from plan_release import (  # noqa: E402
+    IgnoredBranchesOnly,
     NothingToRelease,
     ReleasePlanError,
     breaking_commits,
@@ -244,8 +245,40 @@ class TestPlanRelease:
         _git(repository, "tag", "v1.10.0")
         only = _commit(repository, "ci: one")
 
-        with pytest.raises(ReleasePlanError, match="ships no version"):
+        with pytest.raises(IgnoredBranchesOnly) as refused:
             plan_release(repository, only, _prs(default=("ci/one",)))
+        assert isinstance(refused.value, ReleasePlanError)
+        assert not isinstance(refused.value, NothingToRelease)
+        assert str(refused.value) == (
+            "nothing to release: every branch since v1.10.0 belongs to a class that ships no version"
+        )
+
+    @pytest.mark.parametrize("output_format", ["text", "github"])
+    def test_the_command_line_fails_a_range_of_ignored_branches_as_before(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        output_format: str,
+    ) -> None:
+        """A labelled merge of ignored branches still stops, with the same exit and stderr."""
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        only = _commit(repository, "ci: one")
+        monkeypatch.setattr(
+            plan_release_module, "gh_commit_pull_requests", lambda _slug: _prs(default=("ci/one",))
+        )
+        base = ["--repository", str(repository), "--merge-sha", only, "--slug", "o/r"]
+
+        with pytest.raises(SystemExit) as exited:
+            main([*base, "--format", output_format])
+
+        assert exited.value.code == 1
+        assert capsys.readouterr() == (
+            "",
+            "release plan failed: nothing to release: every branch since v1.10.0 "
+            "belongs to a class that ships no version\n",
+        )
 
     def test_a_commit_carrying_the_only_tag_is_planned_from_the_start(self, tmp_path: Path) -> None:
         repository = _repository(tmp_path, _rules_toml())
@@ -655,7 +688,7 @@ class TestPathScope:
         repository = self._monorepo(tmp_path)
         ci = _touch(repository, "apps/app-a/ci.yml", "ci(app-a): one")
 
-        with pytest.raises(ReleasePlanError, match="ships no version") as refused:
+        with pytest.raises(IgnoredBranchesOnly, match="ships no version") as refused:
             plan_release(repository, ci, _prs(default=("ci/one",)), scope=self.APP_A)
         assert not isinstance(refused.value, NothingToRelease)
 

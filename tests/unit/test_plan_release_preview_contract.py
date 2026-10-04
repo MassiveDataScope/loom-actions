@@ -165,8 +165,13 @@ class TestTheStep:
 # preview. The preview matches the release when both run the same plan-release
 # source, so any src/ file that differs from this pin must be listed below.
 RELEASED_PLANNER = "8a9655b82b19ddf147a1b50e53dcd5638b23f884"
-# src/ files that differ from the pinned planner: none.
-DIVERGED_SINCE_PIN: set[str] = set()
+# src/ files that differ from the pinned planner. None changes the version or
+# the section a release computes:
+# - plan_release.py raises IgnoredBranchesOnly, a ReleasePlanError, where it raised
+#   ReleasePlanError with the same message, so the release stops as before with
+#   the same exit code and stderr.
+# A follow-up moves release-on-label's pin to the release that ships them.
+DIVERGED_SINCE_PIN: set[str] = {"plan_release.py"}
 
 
 class TestThePlannerTheReleaseRuns:
