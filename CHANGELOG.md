@@ -1,3 +1,218 @@
+# 🚀 Release 1.11.0 ([#67](https://github.com/MassiveDataScope/loom-actions/pull/67)) ([`b69b72a`](https://github.com/MassiveDataScope/loom-actions/commit/b69b72a9d861507bf92357b7e3b554f385a8635c))
+
+
+## ✨ Features
+### plan-release
+- **plan-release:** pass over a commit that changes only CHANGELOG.md<br>
+  > A release that keeps a changelog will commit it to the base branch after
+  > its tag, with no pull request. The next release reads that commit, and the
+  > planner refused every commit without a pull request as an unclassifiable
+  > direct push, so the release after the first changelog would fail.
+  > A commit with no pull request whose every changed path is a CHANGELOG.md
+  > file, the name Keep a Changelog 1.1.0 gives the file, now ships nothing
+  > and is passed over. Any other direct push is still refused, a commit that
+  > also changes another file included. The rule does not depend on a
+  > caller's input: in a monorepo, one package's changelog commit lands in
+  > the range of every other package, whose planner does not scope by path.
+  > The per-commit loop moves to _shipped_by, which lowers the cognitive
+  > complexity of plan_release from 12 to 5. A plan that succeeded before is
+  > unchanged; only a plan that was refused for such a commit now succeeds.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** write a Keep a Changelog section for a release<br>
+  > changelog_file.py adds the release to a CHANGELOG.md and writes its new
+  > section as the notes, so the file and the GitHub Release say the same.
+  > Keep a Changelog 1.1.0: the standard header and intro for a new file, an
+  > "## [Unreleased]" section kept on top, newest version first, the
+  > sections Added, Changed, Deprecated, Removed, Fixed and Security in that
+  > order with empty ones left out, and link references at the bottom that
+  > compare the previous tag of the prefix with the new one
+  > (control-plane/v0.0.0...control-plane/v0.1.0), or link the tag of a
+  > first release. A file without an Unreleased heading is refused.
+  > SemVer 2.0.0: the heading carries the bare version, never the prefix.
+  > ISO 8601: the date is the UTC calendar date of the release commit, so a
+  > re-run writes the same one.
+  > Conventional Commits 1.0.0: feat is Added, fix is Fixed (Security when a
+  > scope starts with "sec"), perf, refactor and revert are Changed,
+  > deprecate is Deprecated, remove is Removed; build, chore, ci, docs,
+  > style and test are left out. A "!" or a BREAKING CHANGE footer lists the
+  > change under Changed as "**BREAKING:**". Any other type, or a title that
+  > is not a Conventional Commits header, is refused before a tag exists.
+  > Entries come one per merged pull request, from its title: a pull request
+  > merged with a merge commit brings every commit of its branch into the
+  > range, intermediate ones and reverts of them included. A commit without a
+  > pull request is listed by its subject. The range and the git readers are
+  > the planner's (shipped_commits, latest_release_tag, commit_message,
+  > declares_break); plan_release.py gains the merged pull request reader and
+  > the commit timestamp. A version the file already lists is left alone and
+  > its section is the notes, so a re-run never lists it twice.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** add the release to changelog-file when one is named<br>
+  > The composite takes changelog-file, empty by default. Named, a step after
+  > the plan runs changelog_file.py in the checkout as the caller left it, the
+  > head of the base branch, adds the release to the file, writes its section
+  > as the notes and reports changelog-changed; the notes step, which checks
+  > out the release commit, is skipped. The file is left in the working tree
+  > for the caller to commit. Inputs reach the script through env only.
+  > Left empty, the steps that run and their scripts are the ones before; a
+  > test compares both scripts with v1.10.1 and the notes byte for byte.
+  > release-on-label does not pass the input yet: it pins plan-release at
+  > v1.9.0, which predates it.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** ship only the commits touching the scope's paths<br>
+  > In a monorepo a package's version and changelog took every pull request
+  > merged since its last tag, the other packages' included. A ReleaseScope
+  > may now name paths, and the plan, the declared breaks, the changelog and
+  > the notes read the same `git log --no-merges --full-history <range> --
+  > <paths>`. --full-history keeps a merged branch whose changes to the paths
+  > cancel out, as the unscoped range does.
+  > A range with no commit touching the paths is refused with the planner's
+  > "nothing to release" message, which now names the paths. Every CLI takes
+  > -paths, defaulting to $RELEASE_PATHS; a path that is absolute, holds
+  > "..", or starts with "-" or ":" fails before git is read. No paths runs
+  > the command it always ran.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** add a paths input that scopes the release<br>
+  > The input reaches the plan, changelog and notes steps as RELEASE_PATHS,
+  > the default of each script's --paths, so the scripts callers ran stay
+  > byte for byte the same and an empty input changes nothing.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** list a revert-button title under Changed<br>
+  > GitHub's revert button and git revert title the revert
+  > `Revert "<title>"`, which is no Conventional Commits header, so the
+  > release failed until someone retitled it. The changelog now lists it
+  > under Changed as **Reverted:** <header>, provided the quoted header is
+  > one. The module documents Dependabot's commit-message prefix, which
+  > gives its pull requests a valid title.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** release nothing when no commit touches a scoped release<br>
+  > A monorepo package's release runs for every labelled merge, so a merge
+  > that changed only other packages failed it. With paths, a range where no
+  > commit but the package's own changelog commits touches them now raises
+
+- **plan-release:** commit a release's changelog over the branch as it is<br>
+  > release-on-label committed the file plan-release built over the blob it
+  > was built on, so any commit to the file in between failed the release
+  > job after the GitHub Release existed, and a re-run of that job failed
+  > the same way.
+  > The commit-changelog composite reads the file the base branch holds,
+  > carries the release onto it with carry_release (update_changelog, so a
+  > version already listed is left alone) and commits it through the
+  > contents API; on a 409 it reads again and retries, up to three times,
+  > after 1, 2 and 4 seconds.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### plan-release
+- **plan-release:** parse Conventional Commits with one parser<br>
+  > The planner read a break with a lax pattern while the changelog parsed
+  > titles with a strict one, so `feat()!: x` raised a major the changelog
+  > then refused. ConventionalCommit.parse now serves both and follows
+  > Conventional Commits 1.0.0: a scope is a noun, so `()` makes no header
+  > and declares nothing (item 4); the header needs ": " (item 1); a break
+  > is the `!` or a `BREAKING CHANGE: <description>` footer of a valid
+  > message (items 11 to 13 and 16).
+  > The changelog checks the type before the break, so `spike!: x` is
+  > refused like `spike: x` instead of being listed under Changed.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** raise a major for a pull request title marked breaking<br>
+  > The changelog lists a pull request whose title carries `!` as
+
+- **plan-release:** refuse a breaking entry under a version that is not a major<br>
+  > build_changelog took any version, so a version passed by hand could list
+
+- **plan-release:** list a fix under Security only for the sec or security scope<br>
+  > Any scope starting with "sec" was read as security, so fix(secrets)
+  > and fix(second-pass) landed under Security. A scope, or one part of a
+  > comma-separated scope, must now be exactly sec or security.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+## 📖 Documentation
+### plan-release
+- **plan-release:** say a scope's paths are literal pathspecs<br>
+  > release_history runs git with GIT_LITERAL_PATHSPECS=1 since the history
+  > moved there, so a path is never a glob nor pathspec magic; the scope's
+  > docstrings said otherwise.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** wrap the planner's docstring at the line length<br>
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+## ♻️ Refactor
+### plan-release
+- **plan-release:** model the changelog file as a ChangelogDocument<br>
+  > The file was split into body and link references by a helper that every
+  > reader called again. A frozen ChangelogDocument parses it once and answers
+  > the two questions a release asks: the notes of a listed version, and the
+  > document with a new release under [Unreleased]. The output is unchanged;
+  > the golden tests pin it.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** carry the release line in a ReleaseScope<br>
+  > The planner, the changelog, the notes and the break detection each took a
+  > tag prefix and checked it again before reading git. A frozen ReleaseScope
+  > is checked once, when a command line builds it, and the four read the same
+  > value. Each CLI keeps its options, its exit code and its message.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** read tags, commits and pull requests in one module<br>
+  > release_history holds what the planner, the changelog, the notes and the
+  > break detection read: the last release tag, the range of commits, a
+  > commit's message and time, and the pull requests a commit belongs to.
+  > build_release_notes no longer keeps its own copy of the git runner and
+  > of latest_release_tag, and its refusal names the scope's paths.
+  > One GitHub reader returns PullRequest(number, title, head_ref, merged)
+  > and merged_pull_requests filters it in one place, so the planner now
+  > also ignores a pull request closed without merging, as the changelog
+  > already did.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** normalise a scope's paths however it is built<br>
+  > Only ReleaseScope.parse normalised and deduplicated the paths, so a
+  > scope built directly could hold ./apps/a/ beside apps/a and compare
+  > unequal to the parsed one. __post_init__ now checks, normalises and
+  > deduplicates them for every scope.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** return the changelog update with whether it changed<br>
+  > update_changelog and build_changelog return ChangelogUpdate(text, notes,
+  > changed), so main writes the file when it changed instead of checking
+  > the path again and comparing the file it just read.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+## ✅ Tests
+### plan-release
+- **plan-release:** name each test and helper for what it does<br>
+  > Two tests built a commit as a side effect of `a and b`; each is now two
+  > statements. The unsafe-prefix test runs the command line, so it moves
+  > from TestBuildChangelog to TestMain under a name that says it fails
+  > before writing anything, and the path scope helper takes pull requests,
+  > not readers.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+
+
 # 🚀 Release 1.10.1 ([#65](https://github.com/MassiveDataScope/loom-actions/pull/65)) ([`5f5d304`](https://github.com/MassiveDataScope/loom-actions/commit/5f5d304a3da47c7e35353c6e494e25c70b0cff1d))
 
 
