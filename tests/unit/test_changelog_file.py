@@ -1,0 +1,697 @@
+"""Unit tests for the Keep a Changelog file a release updates.
+
+The standards each test pins:
+
+- Keep a Changelog 1.1.0 (https://keepachangelog.com/en/1.1.0/): the header and
+  intro, an ``## [Unreleased]`` section on top, newest version first,
+  ``## [X.Y.Z] - YYYY-MM-DD``, the sections Added, Changed, Deprecated, Removed,
+  Fixed and Security in that order with empty ones left out, and link
+  references at the bottom.
+- ISO 8601: the release date is a calendar date, ``YYYY-MM-DD``, in UTC.
+- SemVer 2.0.0: the heading carries the bare version, never the tag prefix.
+- Conventional Commits 1.0.0: the type of a pull request title picks the
+  section; ``!`` or a ``BREAKING CHANGE:`` footer marks a break.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parents[2] / "actions" / "release" / "plan-release" / "src"))
+
+from changelog_file import (  # noqa: E402
+    INTRO,
+    Change,
+    ChangelogError,
+    Entry,
+    build_changelog,
+    check_changelog_file,
+    classify,
+    main,
+    release_links,
+    render_section,
+    shipped_changes,
+    update_changelog,
+)
+from plan_release import PullRequest, gh_commit_merged_pull_requests  # noqa: E402
+
+URL = "https://github.com/acme/repo"
+DATE = "2026-10-04"
+# 2026-10-04T10:25:43Z, the merge of periplo-cloud#1; 12:25:43 in Madrid.
+MERGED_AT = "2026-10-04T12:25:43+02:00"
+
+
+def _git(repository: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
+    completed = subprocess.run(
+        ("git", "-C", str(repository), *arguments),
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **(env or {})},
+    )
+    return completed.stdout.strip()
+
+
+def _repository(tmp_path: Path) -> Path:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    _git(repository, "init", "--initial-branch=master")
+    _git(repository, "config", "user.email", "release@example.com")
+    _git(repository, "config", "user.name", "Release")
+    _commit(repository, "chore: initial")
+    return repository
+
+
+def _commit(repository: Path, message: str, when: str = MERGED_AT) -> str:
+    (repository / f"f{len(_git(repository, 'ls-files').split())}").write_text(message, "utf-8")
+    _git(repository, "add", ".")
+    _git(
+        repository,
+        "commit",
+        "-m",
+        message,
+        env={"GIT_COMMITTER_DATE": when, "GIT_AUTHOR_DATE": when},
+    )
+    return _git(repository, "rev-parse", "HEAD")
+
+
+def _change(title: str, breaking: bool = False) -> Change:
+    return Change(title=title, breaking=breaking, reference=f"[#7]({URL}/pull/7)")
+
+
+class TestClassify:
+    """Conventional Commits 1.0.0 types onto Keep a Changelog 1.1.0 sections."""
+
+    @pytest.mark.parametrize(
+        ("title", "section"),
+        [
+            ("feat: add it", "Added"),
+            ("feat(api): add it", "Added"),
+            ("fix: repair it", "Fixed"),
+            ("perf: speed it up", "Changed"),
+            ("refactor: reshape it", "Changed"),
+            # A revert undoes a feature, a fix or a refactor alike; only for a
+            # feature would Removed be right, and the title does not say which.
+            ("revert: undo the cache", "Changed"),
+            ("deprecate(api): the v1 endpoint", "Deprecated"),
+            ("remove(api): the v0 endpoint", "Removed"),
+            ("fix(security): escape the header", "Security"),
+            ("fix(sec): escape the header", "Security"),
+            ("fix(secrets): stop logging the token", "Security"),
+            ("FEAT: upper case types are the same type", "Added"),
+        ],
+    )
+    def test_the_type_picks_the_section(self, title: str, section: str) -> None:
+        entry = classify(_change(title))
+        assert entry is not None
+        assert entry.section == section
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "build: pin it",
+            "chore: tidy it",
+            "ci: run it",
+            "docs: explain it",
+            "style: format it",
+            "test: cover it",
+            "chore(release): prepare v1.10.1 [automated]",
+        ],
+    )
+    def test_types_that_change_nothing_a_user_sees_are_left_out(self, title: str) -> None:
+        assert classify(_change(title)) is None
+
+    @pytest.mark.parametrize(
+        "title", ["feat!: drop it", "feat(api)!: drop it", "chore!: drop Python 3.10"]
+    )
+    def test_a_bang_lists_the_change_as_breaking_under_changed(self, title: str) -> None:
+        entry = classify(_change(title))
+        assert entry is not None
+        assert entry.section == "Changed"
+        assert entry.text.startswith("**BREAKING:** ")
+
+    def test_a_footer_declaring_the_break_lists_it_as_breaking_too(self) -> None:
+        entry = classify(_change("fix: drop the parameter", breaking=True))
+        assert entry == Entry("Changed", f"**BREAKING:** drop the parameter ([#7]({URL}/pull/7))")
+
+    def test_a_security_fix_that_breaks_is_listed_as_breaking(self) -> None:
+        entry = classify(_change("fix(security)!: refuse plain HTTP"))
+        assert entry is not None
+        assert entry.section == "Changed"
+
+    def test_the_text_names_the_scope_the_description_and_the_reference(self) -> None:
+        entry = classify(_change("feat(control-plane): S0 skeleton"))
+        assert entry == Entry("Added", f"**control-plane:** S0 skeleton ([#7]({URL}/pull/7))")
+
+    def test_a_change_without_a_reference_has_no_trailing_link(self) -> None:
+        entry = classify(Change(title="fix: repair it", breaking=False, reference=""))
+        assert entry == Entry("Fixed", "repair it")
+
+    @pytest.mark.parametrize(
+        "title",
+        ["Add the thing", "feat:missing space", "feat(): empty scope", "feat add it", ""],
+    )
+    def test_a_title_that_is_not_a_conventional_commit_is_refused(self, title: str) -> None:
+        with pytest.raises(ChangelogError, match="not a Conventional Commits header"):
+            classify(_change(title))
+
+    def test_a_type_without_a_section_is_refused_instead_of_dropped(self) -> None:
+        with pytest.raises(ChangelogError, match="type 'spike' has no changelog section"):
+            classify(_change("spike: try it"))
+
+
+class TestRenderSection:
+    def test_sections_follow_the_standard_order_and_empty_ones_are_left_out(self) -> None:
+        entries = (
+            Entry("Security", "escape it"),
+            Entry("Fixed", "repair it"),
+            Entry("Added", "add it"),
+            Entry("Added", "add another"),
+        )
+
+        rendered = render_section("1.2.0", DATE, entries)
+
+        assert rendered == (
+            "## [1.2.0] - 2026-10-04\n"
+            "\n"
+            "### Added\n"
+            "\n"
+            "- add it\n"
+            "- add another\n"
+            "\n"
+            "### Fixed\n"
+            "\n"
+            "- repair it\n"
+            "\n"
+            "### Security\n"
+            "\n"
+            "- escape it\n"
+        )
+
+    def test_a_release_with_no_user_facing_change_says_so(self) -> None:
+        assert render_section("1.2.1", DATE, ()) == (
+            "## [1.2.1] - 2026-10-04\n\nNo user-facing changes.\n"
+        )
+
+
+class TestReleaseLinks:
+    def test_the_version_compares_the_previous_tag_with_its_own_honouring_the_prefix(
+        self,
+    ) -> None:
+        assert release_links(URL, "control-plane/v", "0.1.0", "control-plane/v0.0.0") == (
+            f"[unreleased]: {URL}/compare/control-plane/v0.1.0...HEAD",
+            f"[0.1.0]: {URL}/compare/control-plane/v0.0.0...control-plane/v0.1.0",
+        )
+
+    def test_a_first_release_links_its_tag(self) -> None:
+        assert release_links(URL, "v", "0.1.0", None) == (
+            f"[unreleased]: {URL}/compare/v0.1.0...HEAD",
+            f"[0.1.0]: {URL}/releases/tag/v0.1.0",
+        )
+
+
+SECTION_020 = "## [0.2.0] - 2026-10-05\n\n### Added\n\n- add it\n"
+LINKS_020 = (
+    f"[unreleased]: {URL}/compare/v0.2.0...HEAD",
+    f"[0.2.0]: {URL}/compare/v0.1.0...v0.2.0",
+)
+EXISTING = (
+    INTRO + "\n"
+    "## [Unreleased]\n"
+    "\n"
+    "## [0.1.0] - 2026-10-04\n"
+    "\n"
+    "### Fixed\n"
+    "\n"
+    "- repair it\n"
+    "\n"
+    f"[unreleased]: {URL}/compare/v0.1.0...HEAD\n"
+    f"[0.1.0]: {URL}/releases/tag/v0.1.0\n"
+)
+
+
+class TestUpdateChangelog:
+    def test_a_new_file_starts_with_the_standard_header_and_an_unreleased_section(
+        self,
+    ) -> None:
+        text, notes = update_changelog("", "0.2.0", SECTION_020, LINKS_020)
+
+        assert text == (
+            "# Changelog\n"
+            "\n"
+            "All notable changes to this project will be documented in this file.\n"
+            "\n"
+            "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),\n"
+            "and this project adheres to "
+            "[Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n"
+            "\n"
+            "## [Unreleased]\n"
+            "\n"
+            "## [0.2.0] - 2026-10-05\n"
+            "\n"
+            "### Added\n"
+            "\n"
+            "- add it\n"
+            "\n"
+            f"[unreleased]: {URL}/compare/v0.2.0...HEAD\n"
+            f"[0.2.0]: {URL}/compare/v0.1.0...v0.2.0\n"
+        )
+        assert notes == SECTION_020 + "\n" + LINKS_020[1] + "\n"
+
+    def test_the_newest_version_goes_first_and_the_links_follow(self) -> None:
+        text, _ = update_changelog(EXISTING, "0.2.0", SECTION_020, LINKS_020)
+
+        assert text == (
+            INTRO + "\n"
+            "## [Unreleased]\n"
+            "\n"
+            "## [0.2.0] - 2026-10-05\n"
+            "\n"
+            "### Added\n"
+            "\n"
+            "- add it\n"
+            "\n"
+            "## [0.1.0] - 2026-10-04\n"
+            "\n"
+            "### Fixed\n"
+            "\n"
+            "- repair it\n"
+            "\n"
+            f"[unreleased]: {URL}/compare/v0.2.0...HEAD\n"
+            f"[0.2.0]: {URL}/compare/v0.1.0...v0.2.0\n"
+            f"[0.1.0]: {URL}/releases/tag/v0.1.0\n"
+        )
+
+    def test_hand_written_unreleased_notes_are_kept_where_they_are(self) -> None:
+        existing = EXISTING.replace(
+            "## [Unreleased]\n", "## [Unreleased]\n\n### Added\n\n- planned by hand\n"
+        )
+
+        text, _ = update_changelog(existing, "0.2.0", SECTION_020, LINKS_020)
+
+        assert "## [Unreleased]\n\n### Added\n\n- planned by hand\n\n## [0.2.0]" in text
+
+    def test_a_version_already_listed_is_not_listed_twice(self) -> None:
+        once, notes = update_changelog(EXISTING, "0.2.0", SECTION_020, LINKS_020)
+
+        twice, notes_again = update_changelog(once, "0.2.0", "## [0.2.0] - 2027-01-01\n", LINKS_020)
+
+        assert twice == once
+        assert notes_again == notes
+
+    def test_a_rerun_of_the_first_release_keeps_its_notes(self) -> None:
+        text, notes = update_changelog(EXISTING, "0.1.0", "## [0.1.0] - 2027-01-01\n", ())
+
+        assert text == EXISTING
+        assert notes == (
+            "## [0.1.0] - 2026-10-04\n\n### Fixed\n\n- repair it\n"
+            f"\n[0.1.0]: {URL}/releases/tag/v0.1.0\n"
+        )
+
+    def test_a_file_that_does_not_keep_a_changelog_is_refused(self) -> None:
+        with pytest.raises(ChangelogError, match=r"no '## \[Unreleased\]' heading"):
+            update_changelog("# 🚀 Release 1.0.0\n\n- feat: one\n", "1.1.0", SECTION_020, ())
+
+
+class TestCheckChangelogFile:
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("CHANGELOG.md", "CHANGELOG.md"),
+            ("./CHANGELOG.md", "CHANGELOG.md"),
+            ("apps/control-plane/CHANGELOG.md", "apps/control-plane/CHANGELOG.md"),
+        ],
+    )
+    def test_a_changelog_inside_the_checkout_is_accepted(self, path: str, expected: str) -> None:
+        assert check_changelog_file(path).as_posix() == expected
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "",
+            "/etc/CHANGELOG.md",
+            "../CHANGELOG.md",
+            "apps/../../CHANGELOG.md",
+            ".git/CHANGELOG.md",
+            "apps\\CHANGELOG.md",
+            "HISTORY.md",
+            "changelog.md",
+        ],
+    )
+    def test_anything_else_is_refused(self, path: str) -> None:
+        with pytest.raises(ChangelogError, match="changelog file"):
+            check_changelog_file(path)
+
+
+def _reader(pull_requests: dict[str, tuple[PullRequest, ...]]):  # type: ignore[no-untyped-def]
+    return lambda sha: pull_requests.get(sha, ())
+
+
+class TestShippedChanges:
+    """One entry per merged pull request, from its title; a commit only without one."""
+
+    def test_a_pull_request_is_one_change_however_many_commits_it_holds(
+        self, tmp_path: Path
+    ) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v0.1.0")
+        title = "feat(api): add the endpoint"
+        shas = [
+            _commit(repository, "feat(api): first try"),
+            _commit(repository, 'revert: "feat(api): first try"'),
+            _commit(repository, "feat(api): the endpoint"),
+        ]
+        pull_request = PullRequest(number=12, title=title)
+
+        changes = shipped_changes(
+            repository, "v0.1.0", shas[-1], _reader(dict.fromkeys(shas, (pull_request,))), URL
+        )
+
+        assert changes == (Change(title, False, f"[#12]({URL}/pull/12)"),)
+
+    def test_a_commit_of_the_pull_request_declaring_a_break_marks_it(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v0.1.0")
+        first = _commit(repository, "feat: one")
+        marked = _commit(repository, "fix: two\n\nBREAKING CHANGE: the field is gone")
+        pull_request = PullRequest(number=3, title="feat: one and two")
+
+        (change,) = shipped_changes(
+            repository,
+            "v0.1.0",
+            marked,
+            _reader({first: (pull_request,), marked: (pull_request,)}),
+            URL,
+        )
+
+        assert change.breaking is True
+
+    def test_pull_requests_are_listed_by_number(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v0.1.0")
+        later = _commit(repository, "fix: later")
+        earlier = _commit(repository, "feat: earlier")
+
+        changes = shipped_changes(
+            repository,
+            "v0.1.0",
+            earlier,
+            _reader(
+                {
+                    later: (PullRequest(9, "fix: later"),),
+                    earlier: (PullRequest(4, "feat: earlier"),),
+                }
+            ),
+            URL,
+        )
+
+        assert [change.title for change in changes] == ["feat: earlier", "fix: later"]
+
+    def test_a_commit_without_a_pull_request_is_listed_by_its_subject(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v0.1.0")
+        pushed = _commit(repository, "fix: direct\n\nbody")
+
+        changes = shipped_changes(repository, "v0.1.0", pushed, _reader({}), URL)
+
+        assert changes == (
+            Change("fix: direct", False, f"[`{pushed[:7]}`]({URL}/commit/{pushed})"),
+        )
+
+    def test_a_changelog_commit_is_not_a_change(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v0.1.0")
+        (repository / "CHANGELOG.md").write_text("# Changelog\n", "utf-8")
+        _git(repository, "add", "CHANGELOG.md")
+        _git(repository, "commit", "-m", "update the changelog")
+        merge = _commit(repository, "feat: one")
+
+        changes = shipped_changes(
+            repository, "v0.1.0", merge, _reader({merge: (PullRequest(5, "feat: one"),)}), URL
+        )
+
+        assert [change.title for change in changes] == ["feat: one"]
+
+
+class TestGhCommitMergedPullRequests:
+    def test_reads_the_number_and_title_of_the_merged_pull_requests(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        log = tmp_path / "gh.log"
+        answer = [{"number": 1, "title": 'feat: a "quoted"\ttitle \\ here'}]
+        gh = bin_dir / "gh"
+        gh.write_text(
+            f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{log}"\ncat <<\'JSON\'\n'
+            f"{json.dumps(answer)}\nJSON\n",
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+        read = gh_commit_merged_pull_requests("acme/repo")
+
+        assert read("abc") == (PullRequest(1, 'feat: a "quoted"\ttitle \\ here'),)
+        arguments = log.read_text("utf-8").splitlines()
+        assert arguments[:2] == ["api", "repos/acme/repo/commits/abc/pulls"]
+        assert "select(.merged_at != null)" in arguments[3]
+
+
+# periplo-cloud's first control-plane release: PR #1 merged on 2026-10-04 with a
+# merge commit, so every commit of its branch reaches the range, chores, tests
+# and intermediate fixes included.
+PERIPLO_COMMITS = (
+    "feat(control-plane): S0 skeleton with hexagonal layout and RLS schema",
+    "chore(control-plane): pin loom to the pushed PR commit",
+    "fix(control-plane): address pre-merge reviews of S0",
+    "refactor(audit): bound the chain-head loop to two attempts",
+    "test(audit): one call inside pytest.raises in the new refusal tests",
+)
+PERIPLO_CHANGELOG = (
+    "# Changelog\n"
+    "\n"
+    "All notable changes to this project will be documented in this file.\n"
+    "\n"
+    "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),\n"
+    "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n"
+    "\n"
+    "## [Unreleased]\n"
+    "\n"
+    "## [0.1.0] - 2026-10-04\n"
+    "\n"
+    "### Added\n"
+    "\n"
+    "- **control-plane:** S0 skeleton of the control plane (016c-1) "
+    "([#1](https://github.com/MassiveDataScope/periplo-cloud/pull/1))\n"
+    "\n"
+    "[unreleased]: https://github.com/MassiveDataScope/periplo-cloud/compare/"
+    "control-plane/v0.1.0...HEAD\n"
+    "[0.1.0]: https://github.com/MassiveDataScope/periplo-cloud/compare/"
+    "control-plane/v0.0.0...control-plane/v0.1.0\n"
+)
+
+
+def _periplo(tmp_path: Path) -> tuple[Path, str, dict[str, tuple[PullRequest, ...]]]:
+    repository = _repository(tmp_path)
+    _git(repository, "tag", "-a", "control-plane/v0.0.0", "-m", "baseline")
+    (repository / "apps" / "control-plane").mkdir(parents=True)
+    shas = [_commit(repository, message) for message in PERIPLO_COMMITS]
+    title = "feat(control-plane): S0 skeleton of the control plane (016c-1)"
+    return repository, shas[-1], dict.fromkeys(shas, (PullRequest(1, title),))
+
+
+class TestBuildChangelog:
+    def test_periplo_clouds_first_control_plane_release(self, tmp_path: Path) -> None:
+        repository, merge, pull_requests = _periplo(tmp_path)
+
+        text, notes = build_changelog(
+            repository,
+            merge,
+            "0.1.0",
+            _reader(pull_requests),
+            changelog_file="apps/control-plane/CHANGELOG.md",
+            tag_prefix="control-plane/v",
+            repository_url="https://github.com/MassiveDataScope/periplo-cloud",
+        )
+
+        assert text == PERIPLO_CHANGELOG
+        assert notes == (
+            "## [0.1.0] - 2026-10-04\n"
+            "\n"
+            "### Added\n"
+            "\n"
+            "- **control-plane:** S0 skeleton of the control plane (016c-1) "
+            "([#1](https://github.com/MassiveDataScope/periplo-cloud/pull/1))\n"
+            "\n"
+            "[0.1.0]: https://github.com/MassiveDataScope/periplo-cloud/compare/"
+            "control-plane/v0.0.0...control-plane/v0.1.0\n"
+        )
+
+    def test_the_date_is_the_merge_commits_utc_calendar_date(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v0.1.0")
+        # 01:30 in Madrid on the 5th is still the 4th in UTC.
+        merge = _commit(repository, "feat: one", when="2026-10-05T01:30:00+02:00")
+
+        text, _ = build_changelog(
+            repository,
+            merge,
+            "0.2.0",
+            _reader({merge: (PullRequest(2, "feat: one"),)}),
+            changelog_file="CHANGELOG.md",
+            tag_prefix="v",
+            repository_url=URL,
+        )
+
+        assert "## [0.2.0] - 2026-10-04\n" in text
+
+    def test_a_listed_version_is_kept_even_if_a_title_was_since_made_invalid(
+        self, tmp_path: Path
+    ) -> None:
+        repository, merge, pull_requests = _periplo(tmp_path)
+        target = repository / "apps" / "control-plane" / "CHANGELOG.md"
+        target.write_text(PERIPLO_CHANGELOG, "utf-8")
+        renamed = {sha: (PullRequest(1, "S0 skeleton"),) for sha in pull_requests}
+
+        text, _ = build_changelog(
+            repository,
+            merge,
+            "0.1.0",
+            _reader(renamed),
+            changelog_file="apps/control-plane/CHANGELOG.md",
+            tag_prefix="control-plane/v",
+            repository_url="https://github.com/MassiveDataScope/periplo-cloud",
+        )
+
+        assert text == PERIPLO_CHANGELOG
+
+    def test_an_unsafe_prefix_is_refused(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        with pytest.raises(ChangelogError, match="tag prefix"):
+            build_changelog(
+                repository,
+                "HEAD",
+                "0.1.0",
+                _reader({}),
+                changelog_file="CHANGELOG.md",
+                tag_prefix="-v",
+                repository_url=URL,
+            )
+
+
+class TestMain:
+    def _run(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> tuple[int, str, Path, Path]:
+        repository, merge, pull_requests = _periplo(tmp_path)
+        monkeypatch.setattr(
+            "changelog_file.gh_commit_merged_pull_requests", lambda _slug: _reader(pull_requests)
+        )
+        monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+        notes = tmp_path / "CHANGELOG_RELEASE.md"
+        code = main(
+            [
+                "--repository",
+                str(repository),
+                "--merge-sha",
+                merge,
+                "--slug",
+                "MassiveDataScope/periplo-cloud",
+                "--version",
+                "0.1.0",
+                "--tag-prefix=control-plane/v",
+                "--changelog-file",
+                "apps/control-plane/CHANGELOG.md",
+                "--notes-output",
+                str(notes),
+            ]
+        )
+        return code, capsys.readouterr().out, repository, notes
+
+    def test_writes_the_file_and_the_notes_and_reports_the_change(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        code, out, repository, notes = self._run(tmp_path, monkeypatch, capsys)
+
+        assert code == 0
+        assert out == "changed=true\n"
+        target = repository / "apps" / "control-plane" / "CHANGELOG.md"
+        assert target.read_text("utf-8") == PERIPLO_CHANGELOG
+        assert notes.read_text("utf-8").startswith("## [0.1.0] - 2026-10-04\n")
+
+    def test_a_rerun_reports_no_change(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        first = tmp_path / "first"
+        first.mkdir()
+        _, _, repository, notes = self._run(first, monkeypatch, capsys)
+        target = repository / "apps" / "control-plane" / "CHANGELOG.md"
+        written = target.read_text("utf-8")
+        written_notes = notes.read_text("utf-8")
+
+        code = main(
+            [
+                "--repository",
+                str(repository),
+                "--merge-sha",
+                _git(repository, "rev-parse", "HEAD"),
+                "--slug",
+                "MassiveDataScope/periplo-cloud",
+                "--version",
+                "0.1.0",
+                "--tag-prefix=control-plane/v",
+                "--changelog-file",
+                "apps/control-plane/CHANGELOG.md",
+                "--notes-output",
+                str(notes),
+            ]
+        )
+
+        assert code == 0
+        assert capsys.readouterr().out == "changed=false\n"
+        assert target.read_text("utf-8") == written
+        assert notes.read_text("utf-8") == written_notes
+
+    def test_a_refusal_fails_before_writing_anything(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repository = _repository(tmp_path)
+        notes = tmp_path / "notes.md"
+
+        with pytest.raises(SystemExit) as exited:
+            main(
+                [
+                    "--repository",
+                    str(repository),
+                    "--merge-sha",
+                    "HEAD",
+                    "--slug",
+                    "o/r",
+                    "--version",
+                    "0.1.0",
+                    "--changelog-file",
+                    "../CHANGELOG.md",
+                    "--notes-output",
+                    str(notes),
+                ]
+            )
+
+        assert exited.value.code == 1
+        assert "changelog failed: changelog file" in capsys.readouterr().err
+        assert not notes.exists()

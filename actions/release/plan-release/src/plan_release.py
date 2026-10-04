@@ -30,6 +30,17 @@ CHANGELOG_NAME: Final[str] = "CHANGELOG.md"
 CommitPullRequests = Callable[[str], tuple[str, ...]]
 
 
+@dataclass(frozen=True, slots=True)
+class PullRequest:
+    """A merged pull request a commit came from."""
+
+    number: int
+    title: str
+
+
+CommitMergedPullRequests = Callable[[str], tuple[PullRequest, ...]]
+
+
 class ReleasePlanError(RuntimeError):
     """Raised when the release a merge would ship cannot be determined."""
 
@@ -166,6 +177,11 @@ def changes_only_changelogs(repository: Path, sha: str) -> bool:
     return bool(paths) and all(PurePosixPath(path).name == CHANGELOG_NAME for path in paths)
 
 
+def commit_timestamp(repository: Path, sha: str) -> int:
+    """Return the committer time of *sha*, in seconds since the epoch."""
+    return int(_run(("git", "-C", str(repository), "log", "-1", "--pretty=%ct", sha)).strip())
+
+
 def highest_part(parts: Iterable[str | None]) -> str | None:
     """Return the largest part among *parts*, or None when every one ships nothing."""
     present = {part for part in parts if part is not None}
@@ -275,6 +291,30 @@ def gh_commit_pull_requests(slug: str) -> CommitPullRequests:
     def read(sha: str) -> tuple[str, ...]:
         output = _run(("gh", "api", f"repos/{slug}/commits/{sha}/pulls", "--jq", ".[].head.ref"))
         return tuple(line.strip() for line in output.splitlines() if line.strip())
+
+    return read
+
+
+def gh_commit_merged_pull_requests(slug: str) -> CommitMergedPullRequests:
+    """Return a reader of the merged pull requests a commit came from, with their titles.
+
+    A pull request closed without merging can hold the same commit; it shipped
+    nothing, so it is not read.
+    """
+
+    def read(sha: str) -> tuple[PullRequest, ...]:
+        output = _run(
+            (
+                "gh",
+                "api",
+                f"repos/{slug}/commits/{sha}/pulls",
+                "--jq",
+                "[.[] | select(.merged_at != null) | {number, title}]",
+            )
+        )
+        return tuple(
+            PullRequest(int(item["number"]), str(item["title"])) for item in json.loads(output)
+        )
 
     return read
 
