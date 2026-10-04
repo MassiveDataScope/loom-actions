@@ -104,7 +104,10 @@ class TestClassify:
             ("remove(api): the v0 endpoint", "Removed"),
             ("fix(security): escape the header", "Security"),
             ("fix(sec): escape the header", "Security"),
-            ("fix(secrets): stop logging the token", "Security"),
+            ("fix(api, sec): escape the header", "Security"),
+            ("fix(Security,api): escape the header", "Security"),
+            ("fix(secrets): stop logging the token", "Fixed"),
+            ("fix(second-pass): parse it twice", "Fixed"),
             ("FEAT: upper case types are the same type", "Added"),
         ],
     )

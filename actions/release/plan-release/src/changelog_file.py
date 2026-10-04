@@ -26,7 +26,7 @@ dropped, so a mistyped title fails the release before its tag is written.
 
 ====================  ==========================================================
 ``feat``              Added
-``fix``               Fixed; Security when a scope starts with ``sec``
+``fix``               Fixed; Security when a scope is ``sec`` or ``security``
 ``perf``/``refactor`` Changed
 ``revert``            Changed: a revert undoes a feature, a fix or a refactor
                       alike, and only for a feature would Removed be right
@@ -105,6 +105,7 @@ INTRO: Final[str] = (
 )
 _NEW_FILE: Final[str] = f"{INTRO}\n## [Unreleased]\n"
 _NO_CHANGES: Final[str] = "No user-facing changes."
+_SECURITY_SCOPE: Final[re.Pattern[str]] = re.compile(r"sec(urity)?")
 _UNRELEASED: Final[re.Pattern[str]] = re.compile(r"^## \[unreleased\]\s*$", re.IGNORECASE)
 _REFERENCE: Final[re.Pattern[str]] = re.compile(r"^\[[^\]]+\]: \S+$")
 
@@ -155,8 +156,9 @@ def check_changelog_file(path: str) -> PurePosixPath:
 
 
 def _is_security(scope: str | None) -> bool:
+    """Return whether one of the comma-separated scopes is exactly ``sec`` or ``security``."""
     return scope is not None and any(
-        part.strip().lower().startswith("sec") for part in scope.split(",")
+        _SECURITY_SCOPE.fullmatch(part.strip().lower()) for part in scope.split(",")
     )
 
 
