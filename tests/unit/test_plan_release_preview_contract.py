@@ -14,7 +14,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml
+from workflow_steps import steps
 
 ROOT = Path(__file__).parents[2]
 PREVIEW_DIR = ROOT / "actions" / "release" / "plan-release" / "preview"
@@ -108,6 +110,11 @@ class TestTheInterface:
         assert step["env"]["RELEASE_PATHS"] == "${{ inputs.paths }}"
         assert step["env"]["GH_TOKEN"] == "${{ inputs.github-token }}"
 
+    def test_values_that_could_start_with_a_dash_are_passed_attached(self) -> None:
+        run = _step()["run"]
+        for option in ("merge-sha", "pull-request-title", "head-ref", "tag-prefix"):
+            assert f"--{option}=" in run, option
+
     def test_it_runs_no_other_action(self) -> None:
         assert all("uses" not in s for s in _action()["runs"]["steps"])
 
@@ -152,3 +159,43 @@ class TestTheStep:
         assert preview.startswith("## Release preview\n")
         assert "### `api/v`: `api/v1.1.0` (minor)" in preview
         assert "- **api:** add one ([#4](https://github.com/acme/repo/pull/4))" in preview
+
+
+# The plan-release release-on-label runs today: v1.11.0. The preview matches the
+# release when both run the same plan-release source; this composite ships after
+# that pin, so a follow-up moves release-on-label to the release that ships it and
+# updates RELEASED_PLANNER and empties DIVERGED_SINCE_PIN.
+RELEASED_PLANNER = "aa40fd0bd251822a2907475a0a8140495f6cb98e"
+# src/ files that differ from the pinned planner: the preview itself, an optional
+# date for the changelog section and commit_parents. None changes the version or
+# the section a release computes; any other difference must be looked at.
+DIVERGED_SINCE_PIN = {"changelog_file.py", "preview_changelog.py", "release_history.py"}
+
+
+class TestThePlannerTheReleaseRuns:
+    def test_release_on_label_pins_the_documented_planner(self) -> None:
+        uses = [
+            s["uses"]
+            for s in steps("release-on-label", "plan") + steps("release-on-label", "release")
+            if "plan-release" in s.get("uses", "")
+        ]
+        assert uses
+        assert {use.split("@")[1].split()[0] for use in uses} == {RELEASED_PLANNER}
+
+    def test_only_the_documented_files_differ_from_the_pinned_planner(self) -> None:
+        source = "actions/release/plan-release/src"
+        known = subprocess.run(
+            ("git", "-C", str(ROOT), "cat-file", "-e", f"{RELEASED_PLANNER}^{{commit}}"),
+            capture_output=True,
+            check=False,
+        )
+        if known.returncode != 0:
+            pytest.skip(f"{RELEASED_PLANNER} is not in this shallow checkout")
+        diff = subprocess.run(
+            ("git", "-C", str(ROOT), "diff", "--name-only", RELEASED_PLANNER, "--", source),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+
+        assert {Path(path).name for path in diff} == DIVERGED_SINCE_PIN

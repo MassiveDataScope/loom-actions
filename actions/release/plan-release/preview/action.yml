@@ -3,12 +3,16 @@ description: "Show on a pull request the version and changelog section a labelle
 
 # Runs the release's own planner and Keep a Changelog writer (plan-release's
 # src/) on the test merge a pull_request event checks out, reading the pull
-# request as merged under the title it has now. So the preview is the release a
-# caller of release-on-label with changelog: true would publish, or the error it
-# would stop on, for one package; a monorepo runs it once per package, each
-# appending to the same output file, and posts that file once with
-# core/pr-comment-update. The section is dated today in UTC, which the comment
-# calls provisional: the release dates it by its merge commit.
+# request as merged under the title it has now. So it shows the release a caller
+# of release-on-label with changelog: true would publish, or the error it would
+# stop on, for one package, provided both run the same plan-release source:
+# pin this action to the release release-on-label pins its planner at (see the
+# README). It is exact for merge-commit and rebase merges; a squash merge reads
+# breaks from the squash commit GitHub writes instead (see the README). A
+# monorepo runs it once per package, each appending to the same output file,
+# and posts that file once with core/pr-comment-update. The section is dated
+# today in UTC, which the comment calls provisional: the release dates it by its
+# merge commit.
 #
 # The job needs:
 # - actions/checkout of the event's default ref, the test merge
@@ -45,7 +49,10 @@ inputs:
     required: false
     default: "pyproject.toml"
   output:
-    description: "Markdown file the package's preview is appended to; created with a header"
+    description: >
+      Markdown file the package's preview is appended to; created with a header. Run the
+      previews after actions/checkout, which leaves no earlier file, so a re-run of the job
+      writes it afresh
     required: false
     default: "release-preview.md"
   merge-sha:
@@ -102,7 +109,7 @@ runs:
       run: |
         set -euo pipefail
         python3 "${ACTION_PATH}/../src/preview_changelog.py" \
-          --merge-sha "${MERGE_SHA}" --slug "${REPOSITORY_SLUG}" \
+          --merge-sha="${MERGE_SHA}" --slug "${REPOSITORY_SLUG}" \
           --pull-request-number "${PULL_REQUEST_NUMBER}" \
           --pull-request-title="${PULL_REQUEST_TITLE}" --head-ref="${HEAD_REF}" \
           --semantic-branch-config "${SEMANTIC_BRANCH_CONFIG}" --tag-prefix="${TAG_PREFIX}" \
