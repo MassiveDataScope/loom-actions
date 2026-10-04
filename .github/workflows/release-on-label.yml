@@ -261,7 +261,7 @@ jobs:
       # version; the planner says so in the step summary, and nothing follows.
       - name: Store release notes
         if: ${{ steps.plan.outputs.version != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-notes-${{ steps.artifacts.outputs.suffix }}
           path: CHANGELOG_RELEASE.md
@@ -272,7 +272,7 @@ jobs:
       # above, holding the release; the release job commits it once published.
       - name: Store the changelog
         if: ${{ inputs.changelog && steps.plan.outputs.version != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: changelog-${{ steps.artifacts.outputs.suffix }}
           path: ${{ env.CHANGELOG_FILE }}
@@ -382,7 +382,7 @@ jobs:
       # upload-artifact does not honour working-directory; the root package keeps
       # the path it always had.
       - name: Store distributions
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: distributions
           path: ${{ inputs.package-dir == '.' && 'dist/' || format('{0}/dist/', inputs.package-dir) }}
