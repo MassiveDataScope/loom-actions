@@ -256,3 +256,45 @@ def test_the_plan_job_can_read_pull_requests_in_a_private_repository() -> None:
         (Path(__file__).parents[2] / ".github/workflows/release-on-label.yml").read_text()
     )
     assert workflow["jobs"]["plan"]["permissions"]["pull-requests"] == "read"
+
+
+NAMES = "Name the artifacts of the release"
+
+
+class TestArtifactNames:
+    """A caller running two packages' releases in one run gets one set of artifacts each."""
+
+    @pytest.mark.parametrize(
+        ("prefix", "suffix"),
+        [("v", "v"), ("control-plane/v", "control-plane-v"), ("a/b/v", "a-b-v")],
+    )
+    def test_the_suffix_is_the_prefix_with_no_slash(
+        self, tmp_path: Path, prefix: str, suffix: str
+    ) -> None:
+        output = tmp_path / "output"
+        env = {"TAG_PREFIX": prefix, "GITHUB_OUTPUT": str(output)}
+
+        result = wf.run(NAME, "plan", NAMES, env, tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        assert output.read_text("utf-8") == f"suffix={suffix}\n"
+
+    def test_it_is_named_once_the_prefix_is_checked(self) -> None:
+        titles = [s.get("name") for s in wf.steps(NAME, "plan")]
+        assert titles.index(CHECK) < titles.index(NAMES)
+        assert wf.jobs(NAME)["plan"]["outputs"]["artifact_suffix"] == (
+            "${{ steps.artifacts.outputs.suffix }}"
+        )
+
+    @pytest.mark.parametrize(
+        ("upload", "download", "base"),
+        [
+            ("Store release notes", "Download release notes", "release-notes"),
+            ("Store the changelog", "Download the changelog", "changelog"),
+        ],
+    )
+    def test_each_artifact_carries_the_suffix(self, upload: str, download: str, base: str) -> None:
+        stored = wf.step(NAME, "plan", upload)["with"]["name"]
+        read = wf.step(NAME, "release", download)["with"]["name"]
+        assert stored == f"{base}-${{{{ steps.artifacts.outputs.suffix }}}}"
+        assert read == f"{base}-${{{{ needs.plan.outputs.artifact_suffix }}}}"

@@ -72,13 +72,49 @@ on:
         required: false
         type: string
         default: "v"
+      scope-to-package:
+        description: >-
+          Ship only the commits touching package-dir, which must not be the root, or one of
+          shared-paths: they decide the version and fill the changelog and the notes, so
+          another package's pull requests never reach this one, and a labelled merge touching
+          none of them releases nothing. False, the default, ships every commit whatever
+          package-dir is, as before: a package built from files outside package-dir, such as
+          an image built from the root, keeps it false
+        required: false
+        type: boolean
+        default: false
+      shared-paths:
+        description: >-
+          With scope-to-package, the paths the package shares with the others, relative to
+          the repository root and separated by newlines or commas, such as uv.lock. Refused
+          without scope-to-package
+        required: false
+        type: string
+        default: ""
+      changelog:
+        description: >-
+          Keep <package-dir>/CHANGELOG.md (Keep a Changelog 1.1.0) and commit it to the base
+          branch: the planner adds the release, one entry per merged pull request title, and
+          the GitHub Release body is that new section. The base branch must accept a commit
+          from GITHUB_TOKEN through the contents API. False keeps the notes as before
+        required: false
+        type: boolean
+        default: false
     outputs:
       version:
-        description: "Version the release published"
+        description: >-
+          Version the release published; empty when scope-to-package found no commit
+          touching the package since its last tag, and nothing was released
         value: ${{ jobs.plan.outputs.version }}
       distribution-built:
         description: "Whether a distribution was built and left as an artifact"
         value: ${{ jobs.build.outputs.built == 'true' }}
+      changelog-committed:
+        description: >-
+          Whether the base branch holds the changelog with the release, committed by this
+          run or already; false without changelog, or when the commit failed after the
+          release was published, which the run reports as a warning
+        value: ${{ jobs.release.outputs.changelog-committed == 'true' }}
 
 jobs:
   plan:
@@ -95,8 +131,12 @@ jobs:
     outputs:
       version: ${{ steps.plan.outputs.version }}
       release_sha: ${{ env.MERGE_SHA }}
+      changelog_file: ${{ env.CHANGELOG_FILE }}
+      artifact_suffix: ${{ steps.artifacts.outputs.suffix }}
     env:
       MERGE_SHA: ${{ inputs.merge-sha != '' && inputs.merge-sha || github.event.pull_request.merge_commit_sha }}
+      # Empty unless the caller keeps a changelog; the planner then touches no file.
+      CHANGELOG_FILE: ${{ inputs.changelog && (inputs.package-dir == '.' && 'CHANGELOG.md' || format('{0}/CHANGELOG.md', inputs.package-dir)) || '' }}
     steps:
       # The planner's rule (release_tags.check_tag_prefix), checked before
       # anything runs: the prefix names refs and REST paths below.
@@ -117,6 +157,31 @@ jobs:
               exit 1
               ;;
           esac
+
+      # A caller releasing two packages in one run gets one set of artifacts
+      # each; an artifact name may not hold "/", the only such character a
+      # checked prefix can.
+      - name: Name the artifacts of the release
+        id: artifacts
+        shell: bash
+        env:
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        run: |
+          set -euo pipefail
+          echo "suffix=${TAG_PREFIX//\//-}" >> "$GITHUB_OUTPUT"
+
+      # It names the working directory of the build and the changelog file:
+      # apps/api/ or apps//api would name apps/api//CHANGELOG.md.
+      - name: Require a valid package directory
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ inputs.package-dir }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PACKAGE_DIR}" ] && [[ ! "${PACKAGE_DIR}" =~ ^[^/]+(/[^/]+)*$ ]]; then
+            echo "package-dir '${PACKAGE_DIR}' is not allowed: name a directory relative to the root, without a leading or trailing '/' or an empty segment, such as apps/api, or '.' for the root"
+            exit 1
+          fi
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -147,31 +212,77 @@ jobs:
           echo "build-distribution needs package-name to check the built version against the tag."
           exit 1
 
+      # Opt-in: with scope-to-package a package of a monorepo ships only the
+      # commits touching its directory and the paths it shares. Otherwise no
+      # path is passed and every commit ships, whatever package-dir is. One
+      # line, so no input can write another output; the planner checks each
+      # path before reading git.
+      - name: Scope the release to the package
+        id: scope
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ inputs.package-dir }}
+          SHARED_PATHS: ${{ inputs.shared-paths }}
+          SCOPE_TO_PACKAGE: ${{ inputs.scope-to-package }}
+        run: |
+          set -euo pipefail
+          PATHS=""
+          if [ "${SCOPE_TO_PACKAGE}" = "true" ]; then
+            if [ -z "${PACKAGE_DIR}" ] || [ "${PACKAGE_DIR}" = "." ]; then
+              echo "scope-to-package needs a package-dir other than the root: the root package ships every commit"
+              exit 1
+            fi
+            PATHS="${PACKAGE_DIR}${SHARED_PATHS:+,${SHARED_PATHS}}"
+          elif [ -n "${SHARED_PATHS}" ]; then
+            echo "shared-paths is read only with scope-to-package: true; set it, or drop shared-paths"
+            exit 1
+          fi
+          PATHS="${PATHS//$'\r'/}"
+          echo "paths=${PATHS//$'\n'/,}" >> "$GITHUB_OUTPUT"
+
       # Pinned by the commit of a release, not by the floating major tag: a
       # reusable workflow cannot use a path-relative action, and the caller's SHA
       # pin would otherwise mean nothing while this reference moved with every
-      # release. The composite at this commit is the one in this tree.
+      # release. v1.11.0 is the first release whose planner takes the paths and
+      # changelog inputs and ships the commit-changelog composite pinned below.
       - name: Plan the release
         id: plan
-        uses: MassiveDataScope/loom-actions/actions/release/plan-release@07db44adbf2faf48925d75b03b46384877b56773 # v1.9.0
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release@aa40fd0bd251822a2907475a0a8140495f6cb98e # v1.11.0
         with:
           merge-sha: ${{ env.MERGE_SHA }}
           repository-slug: ${{ github.repository }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           semantic-branch-config: ${{ inputs.semantic-branch-config }}
           tag-prefix: ${{ inputs.tag-prefix }}
+          paths: ${{ steps.scope.outputs.paths }}
+          changelog-file: ${{ env.CHANGELOG_FILE }}
 
+      # A scoped release whose paths no merged commit touched plans an empty
+      # version; the planner says so in the step summary, and nothing follows.
       - name: Store release notes
+        if: ${{ steps.plan.outputs.version != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-notes
+          name: release-notes-${{ steps.artifacts.outputs.suffix }}
           path: CHANGELOG_RELEASE.md
+          if-no-files-found: error
+          retention-days: 1
+
+      # The file the planner built on the head of the base branch checked out
+      # above, holding the release; the release job commits it once published.
+      - name: Store the changelog
+        if: ${{ inputs.changelog && steps.plan.outputs.version != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: changelog-${{ steps.artifacts.outputs.suffix }}
+          path: ${{ env.CHANGELOG_FILE }}
           if-no-files-found: error
           retention-days: 1
 
       # Before the build, because a version derived from the tag needs the tag to
       # exist. Idempotent, so a halted release can be re-run.
       - name: Create the immutable version tag
+        if: ${{ steps.plan.outputs.version != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.plan.outputs.version }}
@@ -204,7 +315,7 @@ jobs:
 
   build:
     needs: plan
-    if: ${{ inputs.build-distribution }}
+    if: ${{ inputs.build-distribution && needs.plan.outputs.version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -289,7 +400,9 @@ jobs:
 
   release:
     needs: [plan, build]
-    if: ${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure' }}
+    outputs:
+      changelog-committed: ${{ steps.commit-changelog.outcome == 'success' }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure' && needs.plan.outputs.version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -300,7 +413,7 @@ jobs:
       - name: Download release notes
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-notes
+          name: release-notes-${{ needs.plan.outputs.artifact_suffix }}
 
       - name: Update floating major tag
         env:
@@ -333,3 +446,48 @@ jobs:
           tag_name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
           name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
           body_path: CHANGELOG_RELEASE.md
+
+      # Last, so the file never lists a release that was not published. The tag
+      # and the release exist by now, so neither step can fail the run: a
+      # failure is the warning below. Re-running all jobs plans again on the
+      # base branch as it is then; the commit finds the version listed, or adds it.
+      - name: Download the changelog
+        id: download-changelog
+        if: ${{ inputs.changelog }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: changelog-${{ needs.plan.outputs.artifact_suffix }}
+          path: changelog
+
+      # Through the contents API, so the commit needs no checkout and no
+      # persisted credential, and GitHub signs it. The composite reads the file
+      # on the branch again and adds the release on top, retrying a 409, so a
+      # change made since the plan is kept. The commit changes only
+      # CHANGELOG.md, which the planner passes over in the next release's range.
+      - name: Commit the changelog
+        id: commit-changelog
+        if: ${{ inputs.changelog && steps.download-changelog.outcome == 'success' }}
+        continue-on-error: true
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release/commit-changelog@aa40fd0bd251822a2907475a0a8140495f6cb98e # v1.11.0
+        with:
+          changelog-file: ${{ needs.plan.outputs.changelog_file }}
+          built-file: changelog/CHANGELOG.md
+          version: ${{ needs.plan.outputs.version }}
+          tag-prefix: ${{ inputs.tag-prefix }}
+          base-branch: ${{ inputs.base-branch }}
+          repository-slug: ${{ github.repository }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warn that the changelog was not committed
+        if: ${{ inputs.changelog && (steps.download-changelog.outcome == 'failure' || steps.commit-changelog.outcome == 'failure') }}
+        shell: bash
+        env:
+          CHANGELOG_FILE: ${{ needs.plan.outputs.changelog_file }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+          TAG: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          MESSAGE="${TAG} is released, but ${CHANGELOG_FILE} was not committed to ${BASE_BRANCH}; see the step above. To add it, re-run all jobs of this run, or run the caller again with merge-sha: ${RELEASE_SHA}. The tag and the GitHub Release are kept, and the commit adds the release to the file as the branch holds it then. If ${BASE_BRANCH} only takes pull requests, let GITHUB_TOKEN bypass that rule, or commit the file by hand."
+          echo "::warning title=Changelog not committed::${MESSAGE}"
+          printf '%s\n' "${MESSAGE}" >> "$GITHUB_STEP_SUMMARY"
