@@ -23,7 +23,7 @@ Reusable GitHub Actions for Python projects using Trunk-Based Development and Co
 | Core | `actions/core/pr-comment-update` | Create/update PR comment identified by hidden tags | ✅ Ready |
 | Core | `actions/core/setup-uv` | Setup Python + uv toolchain | ✅ Ready |
 | Release | `actions/release/versioning-branch-semantic` | Calculate semantic version based on branch rules | ✅ Ready |
-| Release | `actions/release/changelog-conventional-commit` | Build changelog markdown from Conventional Commits (its own Jinja format, not the `changelog: true` one) | ✅ Ready |
+| Release | `actions/release/changelog-conventional-commit` | Build changelog markdown from Conventional Commits (its own Jinja format, not the `changelog: true` one) | ⚠️ Deprecated: kept for existing callers; new callers use `plan-release/preview` with `changelog: true` |
 | Release | `actions/release/plan-release/preview` | Preview on a pull request the version and changelog section a `changelog: true` release would write | ✅ Ready |
 | Python | `actions/python/quality-report` | Aggregated quality/security report and fail gates | ✅ Ready |
 
@@ -342,8 +342,10 @@ title that is not a Conventional Commits header shows the error the release woul
 The section is dated today in UTC, marked provisional: the release dates it by its merge
 commit.
 
-It matches `changelog: true`. `actions/release/changelog-conventional-commit` is unchanged
-for its callers, but it renders its own format, listing commits, not what the release writes.
+It matches `changelog: true`. `actions/release/changelog-conventional-commit` is deprecated:
+it stays, unchanged, for its existing callers, but it renders its own format, listing commits,
+not what the release writes. New callers preview with `plan-release/preview` and release with
+`changelog: true`.
 
 It runs on the test merge a `pull_request` event checks out, so the job checks out the
 default ref with `fetch-depth: 0`, and needs `contents: read` and `pull-requests: read`; only
@@ -659,6 +661,9 @@ jobs:
     branch: feature/my-change
     prerelease: "false"
 
+# Deprecated: kept for existing callers. New callers preview the release on pull requests
+# with actions/release/plan-release/preview and keep the changelog with release-on-label's
+# changelog: true; see "Previewing the release on a pull request".
 - name: Generate changelog
   uses: MassiveDataScope/loom-actions/actions/release/changelog-conventional-commit@v1
   with:
