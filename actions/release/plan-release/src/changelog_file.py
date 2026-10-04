@@ -466,8 +466,13 @@ def build_changelog(
     changelog_file: str,
     scope: ReleaseScope = DEFAULT_SCOPE,
     repository_url: str,
+    date: str | None = None,
 ) -> ChangelogUpdate:
     """Return the changelog with the release *merge_sha* ships, and its notes.
+
+    The section is dated *date*, ``YYYY-MM-DD``, when given: a preview has no
+    merge commit to date it by yet. Otherwise it is :func:`release_date` of
+    *merge_sha*, as a release dates it.
 
     Raises:
         ChangelogError: When the file is not allowed, git cannot read the range,
@@ -484,7 +489,7 @@ def build_changelog(
         changes = shipped_changes(
             repository, last_tag, merge_sha, pull_requests, repository_url, scope
         )
-        date = release_date(repository, merge_sha)
+        date = date if date is not None else release_date(repository, merge_sha)
     except HistoryError as error:
         raise ChangelogError(str(error)) from error
     entries = [entry for change in changes if (entry := classify(change)) is not None]
