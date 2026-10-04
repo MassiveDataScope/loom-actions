@@ -14,7 +14,10 @@ from release_scope import (  # noqa: E402
     DEFAULT_SCOPE,
     ReleaseScope,
     ReleaseScopeError,
+    add_release_arguments,
     add_scope_arguments,
+    add_server_url_argument,
+    repository_url,
     scope_of,
 )
 
@@ -115,3 +118,41 @@ class TestPathsOnTheCommandLine:
 
         with pytest.raises(ReleaseScopeError, match="path '../secrets' is not allowed"):
             scope_of(_parse())
+
+
+class TestReleaseArguments:
+    """The arguments every release script takes, declared once for all of them."""
+
+    def _parse(self, *arguments: str) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        add_release_arguments(parser)
+        add_server_url_argument(parser)
+        return parser.parse_args(arguments)
+
+    def test_the_commit_and_the_repository_are_read(self, tmp_path: Path) -> None:
+        options = self._parse(f"--repository={tmp_path}", "--merge-sha=abc", "--slug=acme/repo")
+
+        assert (options.repository, options.merge_sha, options.slug) == (
+            tmp_path,
+            "abc",
+            "acme/repo",
+        )
+
+    def test_the_repository_defaults_to_the_working_directory(self) -> None:
+        assert self._parse("--merge-sha=abc", "--slug=a/b").repository == Path.cwd()
+
+    @pytest.mark.parametrize("missing", ["--merge-sha=abc", "--slug=acme/repo"])
+    def test_the_commit_and_the_slug_are_required(self, missing: str) -> None:
+        given = [a for a in ("--merge-sha=abc", "--slug=acme/repo") if a != missing]
+        with pytest.raises(SystemExit):
+            self._parse(*given)
+
+    def test_the_repository_url_joins_the_server_and_the_slug(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GITHUB_SERVER_URL", raising=False)
+        assert repository_url(self._parse("--merge-sha=a", "--slug=acme/repo")) == (
+            "https://github.com/acme/repo"
+        )
+        given = self._parse("--merge-sha=a", "--slug=acme/repo", "--server-url=https://ghe.io/")
+        assert repository_url(given) == "https://ghe.io/acme/repo"

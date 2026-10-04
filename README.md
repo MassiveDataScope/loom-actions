@@ -345,7 +345,7 @@ commit.
 It matches the release when both run the same plan-release source. The release runs the
 planner `release-on-label` pins, today v1.11.0 (`aa40fd0`); the preview runs the planner its
 caller pins. v1.11.0 computes the same version and section as the source that adds the preview,
-which only adds an optional date and the preview itself. A follow-up moves the
+which only adds an optional date, the preview itself and shared argument parsing. A follow-up moves the
 `release-on-label` pin to the release that ships the preview; pin the preview to that release.
 `tests/unit/test_plan_release_preview_contract.py` records the pin and the files that differ
 from it.

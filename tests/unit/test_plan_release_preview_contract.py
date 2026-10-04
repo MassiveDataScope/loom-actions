@@ -167,9 +167,16 @@ class TestTheStep:
 # updates RELEASED_PLANNER and empties DIVERGED_SINCE_PIN.
 RELEASED_PLANNER = "aa40fd0bd251822a2907475a0a8140495f6cb98e"
 # src/ files that differ from the pinned planner: the preview itself, an optional
-# date for the changelog section and commit_parents. None changes the version or
-# the section a release computes; any other difference must be looked at.
-DIVERGED_SINCE_PIN = {"changelog_file.py", "preview_changelog.py", "release_history.py"}
+# date for the changelog section, commit_parents, and the command-line arguments
+# the scripts now declare once in release_scope. None changes the version or the
+# section a release computes; any other difference must be looked at.
+DIVERGED_SINCE_PIN = {
+    "changelog_file.py",
+    "plan_release.py",
+    "preview_changelog.py",
+    "release_history.py",
+    "release_scope.py",
+}
 
 
 class TestThePlannerTheReleaseRuns:

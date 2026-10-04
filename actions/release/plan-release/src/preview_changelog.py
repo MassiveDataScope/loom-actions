@@ -22,7 +22,8 @@ It matches the release when both run the same plan-release source. The release
 runs the planner release-on-label pins, while the preview runs the one its
 caller pins; release-on-label pins v1.11.0, whose planner and changelog give the
 version and section this source gives (what changed since only adds an
-optional date and :func:`release_history.commit_parents`). The pin moves to the
+optional date, :func:`release_history.commit_parents` and argument parsing
+shared through :mod:`release_scope`). The pin moves to the
 release that ships this preview in a follow-up.
 
 It is exact for merge-commit and rebase merges, whose commits reach the base
@@ -43,7 +44,6 @@ the file as one comment.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from collections.abc import Sequence
@@ -66,7 +66,10 @@ from release_history import (
 from release_scope import (
     ReleaseScope,
     ReleaseScopeError,
+    add_release_arguments,
     add_scope_arguments,
+    add_server_url_argument,
+    repository_url,
     scope_of,
 )
 
@@ -368,9 +371,7 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Preview the release a labelled merge of a pull request would ship."
     )
-    parser.add_argument("--repository", type=Path, default=Path.cwd())
-    parser.add_argument("--merge-sha", required=True, help="the test merge of the pull request")
-    parser.add_argument("--slug", required=True, help="owner/repo the pull requests live in")
+    add_release_arguments(parser)
     parser.add_argument("--pull-request-number", type=int, required=True)
     parser.add_argument("--pull-request-title", required=True)
     parser.add_argument("--head-ref", required=True, help="branch of the pull request")
@@ -379,9 +380,7 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--changelog-file", required=True)
     parser.add_argument("--output", type=Path, required=True, help="Markdown file to append to")
     parser.add_argument("--date", default=datetime.now(UTC).date().isoformat())
-    parser.add_argument(
-        "--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-    )
+    add_server_url_argument(parser)
     return parser.parse_args(arguments)
 
 
@@ -408,7 +407,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             config=Path(options.semantic_branch_config or "pyproject.toml"),
             scope=scope_of(options),
             changelog_file=options.changelog_file,
-            repository_url=f"{options.server_url.rstrip('/')}/{options.slug}",
+            repository_url=repository_url(options),
             date=options.date,
         )
     except (ReleaseScopeError, PreviewError, HistoryError, ChangelogError) as error:
