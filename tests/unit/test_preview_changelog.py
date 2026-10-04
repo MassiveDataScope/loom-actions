@@ -258,6 +258,54 @@ class TestPreviewRelease:
             "release plan failed: branch 'spike/greeting' matches no class"
         )
 
+    def test_a_branch_class_that_ships_no_version_is_no_release(self, tmp_path: Path) -> None:
+        """A chore/ pull request is not labelled for release, so it previews no release."""
+        repository = _monorepo(tmp_path)
+        _branch(repository, "chore/pipeline", {"apps/app-a/ci.yml": "wip"})
+        merge = _test_merge(repository, "chore/pipeline")
+        pull_request = OpenPullRequest(7, "chore(app-a): tidy the pipeline", "chore/pipeline")
+
+        preview = _preview(repository, merge, pull_request)
+
+        assert (preview.version, preview.error) == ("", "")
+        assert preview.reason == (
+            "no release: this pull request's branch class ships no version (`chore/pipeline`); "
+            "labelling it for release would stop the release with: release plan failed: "
+            "nothing to release: every branch since app-a/v0.1.0 belongs to a class that "
+            "ships no version"
+        )
+
+    def test_an_ignored_branch_outside_the_paths_is_no_release_too(self, tmp_path: Path) -> None:
+        repository = _monorepo(tmp_path)
+        tidied = _touch(repository, "apps/app-a/ci.yml", "chore(app-a): tidy")
+        _branch(repository, "chore/docs", {"apps/app-b/README.md": "wip"})
+        merge = _test_merge(repository, "chore/docs")
+        merged = {tidied: (PullRequest(4, "chore(app-a): tidy", "chore/tidy", True),)}
+        pull_request = OpenPullRequest(7, "chore(app-b): document", "chore/docs")
+
+        preview = _preview(repository, merge, pull_request, merged)
+
+        assert (preview.version, preview.error) == ("", "")
+        assert "branch class ships no version (`chore/docs`)" in preview.reason
+
+    def test_a_versioned_branch_over_ignored_ones_still_shows_the_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """Labelling a feat/ pull request would stop on the ignored branches it does not touch."""
+        repository = _monorepo(tmp_path)
+        tidied = _touch(repository, "apps/app-a/ci.yml", "chore(app-a): tidy")
+        _branch(repository, "feat/farewell", {"apps/app-b/bye.py": "wip"})
+        merge = _test_merge(repository, "feat/farewell")
+        merged = {tidied: (PullRequest(4, "chore(app-a): tidy", "chore/tidy", True),)}
+        pull_request = OpenPullRequest(7, "feat(app-b): farewell", "feat/farewell")
+
+        preview = _preview(repository, merge, pull_request, merged)
+
+        assert preview.error == (
+            "release plan failed: nothing to release: every branch since app-a/v0.1.0 "
+            "belongs to a class that ships no version"
+        )
+
     def test_a_pull_request_outside_the_paths_still_previews_what_is_pending(
         self, tmp_path: Path
     ) -> None:
@@ -499,6 +547,15 @@ class TestRender:
         assert text.startswith("### `app-b/v`: no release\n")
         assert "would not release `app-b/v` (nothing to release: no commits).\n" in text
 
+    def test_an_ignored_branch_class_says_no_release_in_a_plain_line(self) -> None:
+        line = "no release: this pull request's branch class ships no version (`ci/x`); ..."
+        preview = ReleasePreview.ignored("app-a/v", BASE, line)
+
+        text = preview.render("apps/app-a/CHANGELOG.md")
+
+        assert text == f"### `app-a/v`: no release\n\n{line}\n"
+        assert (preview.version, preview.error) == ("", "")
+
     def test_an_error_is_fenced_longer_than_any_backticks_it_holds(self) -> None:
         preview = ReleasePreview.failed("app-a/v", BASE, "changelog failed: '```x' is not")
 
@@ -587,6 +644,23 @@ class TestMain:
 
         assert capsys.readouterr().out.splitlines() == ["version=", "failed=true"]
         assert "'-x' is not a Conventional Commits header" in output.read_text("utf-8")
+
+    def test_an_ignored_branch_class_does_not_fail_the_step(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repository = _monorepo(tmp_path)
+        _branch(repository, "chore/pipeline", {"apps/app-a/ci.yml": "wip"})
+        merge = _test_merge(repository, "chore/pipeline")
+        monkeypatch.setattr("preview_changelog.gh_commit_pull_requests", lambda slug: _reader({}))
+        output = tmp_path / "preview.md"
+        chore = ("--pull-request-title=chore(app-a): tidy", "--head-ref=chore/pipeline")
+
+        assert self._main(repository, merge, output, *chore) == 0
+
+        assert capsys.readouterr().out.splitlines() == ["version=", "failed=false"]
+        text = output.read_text("utf-8")
+        assert "### `app-a/v`: no release\n\nno release: this pull request's branch class" in text
+        assert "the release would fail" not in text
 
     def test_an_invalid_scope_fails_the_step(self, tmp_path: Path) -> None:
         repository, merge = self._repository(tmp_path)
