@@ -29,10 +29,31 @@ inputs:
       and "/" only.
     required: false
     default: "v"
+  paths:
+    description: >
+      Paths the release ships, relative to the checkout and separated by newlines or commas,
+      such as apps/control-plane and uv.lock: only the commits changing one of them count
+      for the version, the declared breaks, the changelog and the notes, so a monorepo
+      package never ships another package's pull requests. A range with no such commit,
+      but the package's own changelog commits, releases nothing: the version output is
+      empty, the step summary says why, no notes or changelog are written and the step
+      succeeds. Paths are literal, never globs. No path may be absolute, hold "..", or
+      start with "-" or ":". Empty, the default, ships every commit as before.
+    required: false
+    default: ""
+  changelog-file:
+    description: >
+      CHANGELOG.md to add the release to, relative to the checkout, such as
+      apps/control-plane/CHANGELOG.md; it follows Keep a Changelog 1.1.0 and is created when
+      missing. Its new section, one entry per merged pull request title, becomes the notes.
+      The file is left in the working tree for the caller to commit. Empty, the default,
+      writes the notes as before and touches no file.
+    required: false
+    default: ""
 
 outputs:
   version:
-    description: "Version the release publishes"
+    description: "Version the release publishes; empty when a scoped release has nothing to ship"
     value: ${{ steps.plan.outputs.version }}
   part:
     description: "Version part the shipped branches asked for"
@@ -40,6 +61,9 @@ outputs:
   notes-file:
     description: "File holding the release notes"
     value: ${{ inputs.notes-output }}
+  changelog-changed:
+    description: "Whether changelog-file gained the release; false when it already listed it"
+    value: ${{ steps.changelog.outputs.changed }}
 
 runs:
   using: composite
@@ -54,6 +78,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         SEMANTIC_BRANCH_CONFIG: ${{ inputs.semantic-branch-config }}
         TAG_PREFIX: ${{ inputs.tag-prefix }}
+        RELEASE_PATHS: ${{ inputs.paths }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -77,13 +102,52 @@ runs:
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
 
+    # A scoped release whose paths no commit touched plans an empty version and
+    # succeeds; the caller skips its tag and release on that empty output.
+    - name: Report that nothing is released
+      if: ${{ steps.plan.outputs.version == '' }}
+      shell: bash
+      env:
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+      run: |
+        set -euo pipefail
+        {
+          echo
+          echo "Nothing to release for ${TAG_PREFIX}: no commit since its last tag touches its paths, so no tag, GitHub Release, notes or changelog is written."
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    # Runs in the checkout as the caller left it, the head of the base branch,
+    # so the file gains the release on top of what that branch holds now.
+    - name: Update the changelog
+      id: changelog
+      if: ${{ inputs.changelog-file != '' && steps.plan.outputs.version != '' }}
+      shell: bash
+      env:
+        MERGE_SHA: ${{ inputs.merge-sha }}
+        REPOSITORY_SLUG: ${{ inputs.repository-slug }}
+        VERSION: ${{ steps.plan.outputs.version }}
+        NOTES_OUTPUT: ${{ inputs.notes-output }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        CHANGELOG_FILE: ${{ inputs.changelog-file }}
+        RELEASE_PATHS: ${{ inputs.paths }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/src/changelog_file.py" \
+          --merge-sha "${MERGE_SHA}" --slug "${REPOSITORY_SLUG}" --version "${VERSION}" \
+          --tag-prefix="${TAG_PREFIX}" --changelog-file "${CHANGELOG_FILE}" \
+          --notes-output "${NOTES_OUTPUT}" >> "$GITHUB_OUTPUT"
+
     - name: Write the release notes
+      if: ${{ inputs.changelog-file == '' && steps.plan.outputs.version != '' }}
       shell: bash
       env:
         MERGE_SHA: ${{ inputs.merge-sha }}
         VERSION: ${{ steps.plan.outputs.version }}
         NOTES_OUTPUT: ${{ inputs.notes-output }}
         TAG_PREFIX: ${{ inputs.tag-prefix }}
+        RELEASE_PATHS: ${{ inputs.paths }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail

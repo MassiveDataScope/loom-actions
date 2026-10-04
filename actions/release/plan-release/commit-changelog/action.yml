@@ -1,0 +1,53 @@
+name: "Commit release changelog"
+description: "Commit the changelog plan-release built to the base branch, once the release exists"
+
+# plan-release builds the file on the head of the base branch, before the tag;
+# this commits it after the GitHub Release, when the branch may have moved.
+# Each attempt reads the file the branch holds now and adds the release on top
+# with the planner's own update, retrying a 409 up to three times, so a change
+# made meanwhile is kept and a version already listed is never added twice.
+
+inputs:
+  changelog-file:
+    description: "CHANGELOG.md to commit, relative to the repository root"
+    required: true
+  built-file:
+    description: "The changelog plan-release built, holding the release"
+    required: true
+  version:
+    description: "Version the release published"
+    required: true
+  tag-prefix:
+    description: "Prefix of the release tag, named in the commit message"
+    required: false
+    default: "v"
+  base-branch:
+    description: "Branch to commit to"
+    required: true
+  repository-slug:
+    description: "owner/repo the branch lives in"
+    required: true
+  github-token:
+    description: "Token allowed to write contents on the base branch"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Commit the changelog
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CHANGELOG_FILE: ${{ inputs.changelog-file }}
+        BUILT_FILE: ${{ inputs.built-file }}
+        VERSION: ${{ inputs.version }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        REPOSITORY_SLUG: ${{ inputs.repository-slug }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/../src/commit_changelog.py" \
+          --slug "${REPOSITORY_SLUG}" --branch "${BASE_BRANCH}" \
+          --changelog-file "${CHANGELOG_FILE}" --built "${BUILT_FILE}" \
+          --version "${VERSION}" --tag-prefix="${TAG_PREFIX}"

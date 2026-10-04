@@ -5,30 +5,48 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
 import tomllib
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, NoReturn
 
-from release_tags import (
-    DEFAULT_TAG_PREFIX,
-    TagPrefixError,
-    check_tag_prefix,
-    release_tag_glob,
-    release_tag_pattern,
+from conventional_commits import declares_break
+from release_history import (
+    CommitPullRequests,
+    HistoryError,
+    changes_only_changelogs,
+    commit_message,
+    gh_commit_pull_requests,
+    latest_release_tag,
+    merged_pull_requests,
+    range_log,
 )
+from release_scope import (
+    DEFAULT_SCOPE,
+    ReleaseScope,
+    ReleaseScopeError,
+    add_scope_arguments,
+    scope_of,
+)
+from release_tags import DEFAULT_TAG_PREFIX, release_tag_pattern
 
 _PARTS: Final[tuple[str, ...]] = ("major", "minor", "patch")
 _DEFAULT_CONFIG: Final[Path] = Path("pyproject.toml")
 
-CommitPullRequests = Callable[[str], tuple[str, ...]]
-
 
 class ReleasePlanError(RuntimeError):
     """Raised when the release a merge would ship cannot be determined."""
+
+
+class NothingToRelease(ReleasePlanError):
+    """Raised when no commit since the last tag touches the paths of a scoped release.
+
+    A monorepo package's release runs for every labelled merge, so a merge that
+    changed only other packages is no anomaly: the release is a no-op, not a
+    failure. An unscoped release with nothing to ship still fails.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,15 +79,6 @@ class ReleasePlan:
             part = entry.part or "-"
             lines.append(f"  {entry.sha[:8]}  {part:<5}  {entry.head_ref}")
         return "\n".join(lines) + "\n"
-
-
-def _run(command: Sequence[str]) -> str:
-    try:
-        completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    except (OSError, subprocess.CalledProcessError) as error:
-        detail = getattr(error, "stderr", "") or str(error)
-        raise ReleasePlanError(f"{' '.join(command)} failed: {detail.strip()}") from error
-    return completed.stdout
 
 
 def branch_rules(repository: Path, config: Path = _DEFAULT_CONFIG) -> Mapping[str, tuple[str, ...]]:
@@ -113,31 +122,6 @@ def classify_branch(head_ref: str, rules: Mapping[str, tuple[str, ...]]) -> str 
     )
 
 
-_BREAK_SUBJECT = re.compile(r"[a-zA-Z]+(?:\([^)]*\))?!:")
-_BREAK_FOOTER = re.compile(r"^BREAKING[ -]CHANGE:", re.MULTILINE)
-
-
-def declares_break(message: str) -> bool:
-    """Return whether *message* declares a breaking change, per Conventional Commits.
-
-    Two spellings carry it: a ``!`` before the colon of the subject, and a
-    ``BREAKING CHANGE:`` (or ``BREAKING-CHANGE:``) footer.
-
-    Args:
-        message: The commit's full message, subject and body.
-
-    Returns:
-        Whether the commit declares a break.
-    """
-    subject, _, body = message.partition("\n")
-    return bool(_BREAK_SUBJECT.match(subject.strip()) or _BREAK_FOOTER.search(body))
-
-
-def commit_message(repository: Path, sha: str) -> str:
-    """Return the full message of *sha*."""
-    return _run(("git", "-C", str(repository), "log", "-1", "--pretty=%B", sha))
-
-
 def highest_part(parts: Iterable[str | None]) -> str | None:
     """Return the largest part among *parts*, or None when every one ships nothing."""
     present = {part for part in parts if part is not None}
@@ -167,88 +151,52 @@ def next_version(last_tag: str | None, part: str, prefix: str = DEFAULT_TAG_PREF
     return f"{major}.{minor}.{patch + 1}"
 
 
-def _tagged_commit(repository: Path, tag: str) -> str:
-    return _run(("git", "-C", str(repository), "rev-list", "-n", "1", tag)).strip()
-
-
-def latest_release_tag(
-    repository: Path, merge_sha: str, prefix: str = DEFAULT_TAG_PREFIX
-) -> str | None:
-    """Return the highest *prefix* release tag before *merge_sha*, ignoring its own tags.
-
-    A release re-run for a commit that is already tagged must plan the same
-    version again, so a tag pointing at *merge_sha* is not a release that
-    preceded it. Tags with another prefix belong to another release line, such
-    as another package of a monorepo, and are not read.
-
-    Raises:
-        TagPrefixError: When *prefix* is not allowed.
-    """
-    pattern = release_tag_pattern(prefix)
-    output = _run(
-        (
-            "git",
-            "-C",
-            str(repository),
-            "tag",
-            "--list",
-            release_tag_glob(prefix),
-            "--merged",
-            merge_sha,
-            "--sort=-v:refname",
-        )
-    )
-    for line in output.splitlines():
-        candidate = line.strip()
-        if not pattern.match(candidate):
-            continue
-        if _tagged_commit(repository, candidate) == merge_sha:
-            continue
-        return candidate
-    return None
-
-
-def shipped_commits(repository: Path, last_tag: str | None, merge_sha: str) -> tuple[str, ...]:
-    """Return every commit the release ships, oldest last."""
-    revision_range = f"{last_tag}..{merge_sha}" if last_tag else merge_sha
-    output = _run(
-        ("git", "-C", str(repository), "log", "--no-merges", "--pretty=%H", revision_range)
-    )
-    return tuple(line.strip() for line in output.splitlines() if line.strip())
-
-
 def breaking_commits(
-    repository: Path, merge_sha: str, tag_prefix: str = DEFAULT_TAG_PREFIX
+    repository: Path, merge_sha: str, scope: ReleaseScope = DEFAULT_SCOPE
 ) -> tuple[str, ...]:
-    """Return the commits since the last *tag_prefix* release that declare a break.
+    """Return the commits since the last release of *scope* that declare a break.
 
     The range is the one :func:`plan_release` ships: from the highest release
     tag before *merge_sha* to *merge_sha*, or the whole history without a tag.
 
     Raises:
-        ReleasePlanError: When *tag_prefix* is not allowed or git cannot read
-            the range.
+        HistoryError: When git cannot read the range.
     """
-    try:
-        check_tag_prefix(tag_prefix)
-    except TagPrefixError as error:
-        raise ReleasePlanError(str(error)) from error
-    last_tag = latest_release_tag(repository, merge_sha, tag_prefix)
+    last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
     return tuple(
         sha
-        for sha in shipped_commits(repository, last_tag, merge_sha)
+        for sha in range_log(repository, last_tag, merge_sha, scope)
         if declares_break(commit_message(repository, sha))
     )
 
 
-def gh_commit_pull_requests(slug: str) -> CommitPullRequests:
-    """Return a reader of the head refs of the pull requests a commit came from."""
+def _shipped_by(
+    repository: Path,
+    sha: str,
+    commit_pull_requests: CommitPullRequests,
+    rules: Mapping[str, tuple[str, ...]],
+) -> list[ShippedPullRequest]:
+    pull_requests = merged_pull_requests(commit_pull_requests, sha)
+    if not pull_requests and changes_only_changelogs(repository, sha):
+        return []
+    if not pull_requests:
+        raise ReleasePlanError(
+            f"commit {sha} belongs to no merged pull request: a direct push cannot be classified"
+        )
+    marked = declares_break(commit_message(repository, sha))
+    shipped = []
+    for pull_request in pull_requests:
+        branch_part = classify_branch(pull_request.head_ref, rules)
+        breaking = marked or declares_break(pull_request.title)
+        shipped.append(
+            ShippedPullRequest(sha, pull_request.head_ref, "major" if breaking else branch_part)
+        )
+    return shipped
 
-    def read(sha: str) -> tuple[str, ...]:
-        output = _run(("gh", "api", f"repos/{slug}/commits/{sha}/pulls", "--jq", ".[].head.ref"))
-        return tuple(line.strip() for line in output.splitlines() if line.strip())
 
-    return read
+def _nothing_to_release(scope: ReleaseScope, last_tag: str | None) -> ReleasePlanError:
+    message = scope.no_commits(last_tag)
+    return NothingToRelease(message) if scope.paths else ReleasePlanError(message)
 
 
 def plan_release(
@@ -257,56 +205,57 @@ def plan_release(
     commit_pull_requests: CommitPullRequests,
     *,
     config: Path = _DEFAULT_CONFIG,
-    tag_prefix: str = DEFAULT_TAG_PREFIX,
+    scope: ReleaseScope = DEFAULT_SCOPE,
 ) -> ReleasePlan:
     """Return the release *merge_sha* ships, from the branches merged since the last tag.
 
+    Only the commits of *scope* count: with paths, the commits that change one
+    of them, for the part, the declared breaks and the shipped list alike.
+
     The part is the highest one any shipped branch asks for, so a batch holding a
     feature never ships as a patch. A commit declaring a break — a ``!`` in its
-    subject or a ``BREAKING CHANGE:`` footer — asks for a major whatever its
-    branch asks for. A commit with no pull request, or one whose branch matches
-    no declared class, refuses the release instead of lowering it.
+    subject or a ``BREAKING CHANGE:`` footer — or a pull request whose title
+    carries the ``!`` asks for a major whatever its branch asks for, so the
+    version agrees with the ``**BREAKING:**`` entries of the changelog.
+
+    A commit with no merged pull request, or one whose branch matches no
+    declared class, refuses the release instead of lowering it; the one
+    exception is a commit that changes only ``CHANGELOG.md`` files, which a
+    release keeping a changelog pushes and which ships no version.
 
     Args:
         repository:           Checkout to read tags and commits from.
         merge_sha:            Commit the release is cut from.
-        commit_pull_requests: Reader of the head refs a commit came from.
+        commit_pull_requests: Reader of the pull requests a commit belongs to;
+            only the merged ones count.
         config:               TOML file holding the branch rules, relative to
             *repository* unless absolute.
-        tag_prefix:           Prefix of the release tags this release line reads,
-            ``v`` unless a monorepo package releases under its own.
+        scope:                Release line the release belongs to: the tags it
+            reads, ``v`` unless a monorepo package releases under its own.
 
     Returns:
         The planned release.
 
     Raises:
-        ReleasePlanError: When *tag_prefix* is not allowed, the range is empty,
-            *config* does not exist, a commit has no pull request, a branch is
+        NothingToRelease: When *scope* has paths and no commit since the last
+            tag, but its own changelog commits, touches them.
+        ReleasePlanError: When the range holds no commit of *scope*, *config*
+            does not exist, a commit has no merged pull request, a branch is
             unclassified, or nothing in the range ships a version.
+        HistoryError:     When git or GitHub cannot read the range.
     """
-    try:
-        check_tag_prefix(tag_prefix)
-    except TagPrefixError as error:
-        raise ReleasePlanError(str(error)) from error
-    last_tag = latest_release_tag(repository, merge_sha, tag_prefix)
-    commits = shipped_commits(repository, last_tag, merge_sha)
+    last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
+    commits = range_log(repository, last_tag, merge_sha, scope)
     if not commits:
-        raise ReleasePlanError(
-            f"nothing to release: no commits since {last_tag or 'the start of history'}"
-        )
+        raise _nothing_to_release(scope, last_tag)
 
     rules = branch_rules(repository, config)
     shipped: list[ShippedPullRequest] = []
     for sha in commits:
-        head_refs = commit_pull_requests(sha)
-        if not head_refs:
-            raise ReleasePlanError(
-                f"commit {sha} belongs to no pull request: a direct push cannot be classified"
-            )
-        marked = declares_break(commit_message(repository, sha))
-        for head_ref in head_refs:
-            branch_part = classify_branch(head_ref, rules)
-            shipped.append(ShippedPullRequest(sha, head_ref, "major" if marked else branch_part))
+        shipped.extend(_shipped_by(repository, sha, commit_pull_requests, rules))
+    if not shipped and scope.paths:
+        # Only the package's own changelog commits, which ship no version.
+        raise NothingToRelease(scope.no_commits(last_tag))
 
     part = highest_part(entry.part for entry in shipped)
     if part is None:
@@ -314,7 +263,9 @@ def plan_release(
             "nothing to release: every branch since "
             f"{last_tag or 'the start of history'} belongs to a class that ships no version"
         )
-    return ReleasePlan(last_tag, part, next_version(last_tag, part, tag_prefix), tuple(shipped))
+    return ReleasePlan(
+        last_tag, part, next_version(last_tag, part, scope.tag_prefix), tuple(shipped)
+    )
 
 
 def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
@@ -328,16 +279,13 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
         help="TOML file declaring [tool.semantic_branch], relative to --repository; "
         "empty means pyproject.toml",
     )
-    parser.add_argument(
-        "--tag-prefix",
-        default=DEFAULT_TAG_PREFIX,
-        help="prefix of the release tags to read, before the version; v by default",
-    )
+    add_scope_arguments(parser)
     parser.add_argument(
         "--format",
         choices=("text", "github"),
         default="text",
-        help="text prints the plan for an operator; github writes version and part outputs",
+        help="text prints the plan for an operator; github writes version and part outputs, "
+        "both empty when a scoped release has nothing to ship",
     )
     return parser.parse_args(arguments)
 
@@ -355,9 +303,12 @@ def main(arguments: Sequence[str] | None = None) -> int:
             options.merge_sha,
             gh_commit_pull_requests(options.slug),
             config=Path(options.semantic_branch_config or _DEFAULT_CONFIG),
-            tag_prefix=options.tag_prefix,
+            scope=scope_of(options),
         )
-    except ReleasePlanError as error:
+    except NothingToRelease as nothing:
+        print(json.dumps({"version": "", "part": ""}) if options.format == "github" else nothing)
+        return 0
+    except (ReleaseScopeError, ReleasePlanError, HistoryError) as error:
         _fail(str(error))
     if options.format == "github":
         print(json.dumps({"version": plan.version, "part": plan.part}))
