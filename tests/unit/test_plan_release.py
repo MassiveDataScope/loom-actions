@@ -719,9 +719,8 @@ class TestPathScope:
         repository = self._monorepo(tmp_path)
         _git(repository, "checkout", "-q", "-b", "feat/try")
         tried = _touch(repository, "apps/app-a/src.py", "feat(app-a): try it")
-        undone = _git(repository, "revert", "--no-edit", tried) and _git(
-            repository, "rev-parse", "HEAD"
-        )
+        _git(repository, "revert", "--no-edit", tried)
+        undone = _git(repository, "rev-parse", "HEAD")
         _git(repository, "checkout", "-q", "master")
         _git(repository, "merge", "--no-ff", "-q", "-m", "Merge feat/try", "feat/try")
         merge = _git(repository, "rev-parse", "HEAD")

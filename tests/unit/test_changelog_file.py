@@ -29,6 +29,7 @@ from changelog_file import (  # noqa: E402
     Change,
     ChangelogDocument,
     ChangelogError,
+    ChangelogUpdate,
     Entry,
     build_changelog,
     carry_release,
@@ -658,23 +659,6 @@ class TestBuildChangelog:
 
         assert text == PERIPLO_CHANGELOG
 
-    def test_an_unsafe_prefix_is_refused(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        repository = _repository(tmp_path)
-        with pytest.raises(SystemExit) as exited:
-            main(
-                [
-                    *("--repository", str(repository), "--merge-sha", "HEAD", "--slug", "o/r"),
-                    *("--version", "0.1.0", "--changelog-file", "CHANGELOG.md"),
-                    *("--notes-output", str(tmp_path / "notes.md"), "--tag-prefix=-v"),
-                ]
-            )
-
-        assert exited.value.code == 1
-        assert "changelog failed: tag prefix '-v' is not allowed" in capsys.readouterr().err
-        assert not (repository / "CHANGELOG.md").exists()
-
 
 class TestABreakNeedsAMajor:
     """A **BREAKING:** entry under a version that is not a major would contradict SemVer.
@@ -735,12 +719,14 @@ def _touch(repository: Path, path: str, message: str) -> str:
 class TestPathScope:
     """A package of a monorepo lists only the pull requests that touch its paths."""
 
-    def _build(self, repository: Path, merge: str, readers: dict[str, tuple[PullRequest, ...]]):  # type: ignore[no-untyped-def]
+    def _build(
+        self, repository: Path, merge: str, pull_requests: dict[str, tuple[PullRequest, ...]]
+    ) -> ChangelogUpdate:
         return build_changelog(
             repository,
             merge,
             "0.2.0",
-            _reader(readers),
+            _reader(pull_requests),
             changelog_file="apps/app-a/CHANGELOG.md",
             scope=ReleaseScope("app-a/v", ("apps/app-a",)),
             repository_url=URL,
@@ -751,18 +737,16 @@ class TestPathScope:
         _git(repository, "tag", "app-a/v0.1.0")
         mine = _touch(repository, "apps/app-a/src.py", "feat(app-a): one")
         other = _touch(repository, "apps/app-b/src.py", "fix(app-b): two")
-        both = _touch(repository, "apps/app-a/x.py", "fix: three") and _touch(
-            repository, "apps/app-b/x.py", "fix: three"
-        )
-        both_first = _git(repository, "rev-parse", "HEAD~1")
-        readers = {
+        both_first = _touch(repository, "apps/app-a/x.py", "fix: three")
+        both = _touch(repository, "apps/app-b/x.py", "fix: three")
+        pull_requests = {
             mine: (_pr(1, "feat(app-a): one"),),
             other: (_pr(2, "fix(app-b): two"),),
             both_first: (_pr(3, "fix: three"),),
             both: (_pr(3, "fix: three"),),
         }
 
-        notes = self._build(repository, both, readers).notes
+        notes = self._build(repository, both, pull_requests).notes
 
         assert notes == (
             "## [0.2.0] - 2026-10-04\n\n### Added\n\n"
@@ -891,3 +875,20 @@ class TestMain:
         assert exited.value.code == 1
         assert "changelog failed: changelog file" in capsys.readouterr().err
         assert not notes.exists()
+
+    def test_an_unsafe_prefix_fails_before_writing_anything(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repository = _repository(tmp_path)
+        with pytest.raises(SystemExit) as exited:
+            main(
+                [
+                    *("--repository", str(repository), "--merge-sha", "HEAD", "--slug", "o/r"),
+                    *("--version", "0.1.0", "--changelog-file", "CHANGELOG.md"),
+                    *("--notes-output", str(tmp_path / "notes.md"), "--tag-prefix=-v"),
+                ]
+            )
+
+        assert exited.value.code == 1
+        assert "changelog failed: tag prefix '-v' is not allowed" in capsys.readouterr().err
+        assert not (repository / "CHANGELOG.md").exists()
