@@ -72,6 +72,15 @@ on:
         required: false
         type: string
         default: "v"
+      changelog:
+        description: >-
+          Keep <package-dir>/CHANGELOG.md (Keep a Changelog 1.1.0) and commit it to the base
+          branch: the planner adds the release, one entry per merged pull request title, and
+          the GitHub Release body is that new section. The base branch must accept a commit
+          from GITHUB_TOKEN through the contents API. False keeps the notes as before
+        required: false
+        type: boolean
+        default: false
     outputs:
       version:
         description: "Version the release published"
@@ -95,8 +104,13 @@ jobs:
     outputs:
       version: ${{ steps.plan.outputs.version }}
       release_sha: ${{ env.MERGE_SHA }}
+      changelog_file: ${{ env.CHANGELOG_FILE }}
+      changelog_changed: ${{ steps.plan.outputs.changelog-changed }}
+      changelog_blob: ${{ steps.changelog.outputs.blob }}
     env:
       MERGE_SHA: ${{ inputs.merge-sha != '' && inputs.merge-sha || github.event.pull_request.merge_commit_sha }}
+      # Empty unless the caller keeps a changelog; the planner then touches no file.
+      CHANGELOG_FILE: ${{ inputs.changelog && (inputs.package-dir == '.' && 'CHANGELOG.md' || format('{0}/CHANGELOG.md', inputs.package-dir)) || '' }}
     steps:
       # The planner's rule (release_tags.check_tag_prefix), checked before
       # anything runs: the prefix names refs and REST paths below.
@@ -153,19 +167,41 @@ jobs:
       # release. The composite at this commit is the one in this tree.
       - name: Plan the release
         id: plan
-        uses: MassiveDataScope/loom-actions/actions/release/plan-release@07db44adbf2faf48925d75b03b46384877b56773 # v1.9.0
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release@33412af61b9cb01f90e58a6dd88beaf4f8216447 # v1.11.0
         with:
           merge-sha: ${{ env.MERGE_SHA }}
           repository-slug: ${{ github.repository }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           semantic-branch-config: ${{ inputs.semantic-branch-config }}
           tag-prefix: ${{ inputs.tag-prefix }}
+          changelog-file: ${{ env.CHANGELOG_FILE }}
 
       - name: Store release notes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-notes
           path: CHANGELOG_RELEASE.md
+          if-no-files-found: error
+          retention-days: 1
+
+      # The planner built the file on the head of the base branch checked out
+      # above. The commit names that blob, so a branch whose file has changed
+      # since refuses it instead of losing the change; empty creates the file.
+      - name: Find the changelog the release builds on
+        id: changelog
+        if: ${{ inputs.changelog }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BLOB=$(git rev-parse --verify --quiet "HEAD:${CHANGELOG_FILE}" || true)
+          echo "blob=${BLOB}" >> "$GITHUB_OUTPUT"
+
+      - name: Store the changelog
+        if: ${{ inputs.changelog && steps.plan.outputs.changelog-changed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: changelog
+          path: ${{ env.CHANGELOG_FILE }}
           if-no-files-found: error
           retention-days: 1
 
@@ -333,3 +369,36 @@ jobs:
           tag_name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
           name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
           body_path: CHANGELOG_RELEASE.md
+
+      # Last, so the file never lists a release that was not published. A re-run
+      # finds the version already listed and commits nothing.
+      - name: Download the changelog
+        if: ${{ inputs.changelog && needs.plan.outputs.changelog_changed == 'true' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: changelog
+          path: changelog
+
+      # Through the contents API, so the commit needs no checkout and no
+      # persisted credential, and GitHub signs it. It changes only CHANGELOG.md,
+      # which the planner passes over in the next release's range.
+      - name: Commit the changelog
+        if: ${{ inputs.changelog && needs.plan.outputs.changelog_changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANGELOG_FILE: ${{ needs.plan.outputs.changelog_file }}
+          BLOB_SHA: ${{ needs.plan.outputs.changelog_blob }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg message "docs(release): changelog for ${TAG_PREFIX}${VERSION}" \
+            --arg branch "${BASE_BRANCH}" \
+            --arg sha "${BLOB_SHA}" \
+            --rawfile text changelog/CHANGELOG.md \
+            '{message: $message, branch: $branch, content: ($text | @base64)}
+             + (if $sha == "" then {} else {sha: $sha} end)' \
+            | gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${CHANGELOG_FILE}" \
+              --input - --jq .commit.sha
