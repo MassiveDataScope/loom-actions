@@ -1,7 +1,7 @@
 """Preview, on an open pull request, the release a labelled merge of it would ship.
 
-The preview reruns the release itself rather than imitating it: the planner of
-:mod:`plan_release` and the changelog of :mod:`changelog_file`, on the test
+The preview runs the release's own code rather than imitating it: the planner
+of :mod:`plan_release` and the changelog of :mod:`changelog_file`, on the test
 merge GitHub checks out for a ``pull_request`` event (``refs/pull/N/merge``),
 whose first parent is the head of the base branch and whose second is the head
 of the pull request. The one thing a release knows that an open pull request
@@ -17,6 +17,21 @@ other commit is read from GitHub as the release reads it. So the preview shows:
 - "no release" when no commit since the last tag touches those paths, or the
   error the release would stop on, word for word, such as a title that is not
   a Conventional Commits header.
+
+It matches the release when both run the same plan-release source. The release
+runs the planner release-on-label pins, while the preview runs the one its
+caller pins; release-on-label pins v1.11.0, whose planner and changelog give the
+version and section this source gives (what changed since only adds an
+optional date and :func:`release_history.commit_parents`). The pin moves to the
+release that ships this preview in a follow-up.
+
+It is exact for merge-commit and rebase merges, whose commits reach the base
+branch as they are. A squash merge ships one commit GitHub writes, and the
+release reads breaks and paths from it: the title is its header, so a ``!`` in
+the title counts, but a ``feat!:`` commit other than the first becomes a
+``* feat!:`` line of its body, which declares nothing, and a ``BREAKING
+CHANGE:`` footer counts only when the repository squashes with the "pull
+request title and description" setting and the description carries it.
 
 It previews a release that keeps a changelog (``changelog: true`` on
 release-on-label). The section is dated today, in UTC, which is provisional:
@@ -34,6 +49,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Final, NoReturn
 
@@ -48,7 +64,6 @@ from release_history import (
     range_log,
 )
 from release_scope import (
-    DEFAULT_SCOPE,
     ReleaseScope,
     ReleaseScopeError,
     add_scope_arguments,
@@ -70,6 +85,8 @@ _HEADER: Final[str] = (
     "\n"
 )
 _BACKTICKS: Final[re.Pattern[str]] = re.compile(r"`+")
+# The rule release-on-label checks its release commit against.
+_FULL_SHA: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{40}")
 
 
 class PreviewError(RuntimeError):
@@ -89,35 +106,44 @@ class OpenPullRequest:
         return PullRequest(self.number, self.title, self.head_ref, merged=True)
 
 
-def _brought_in(
-    repository: Path, merge_sha: str, scope: ReleaseScope = DEFAULT_SCOPE
-) -> tuple[str, ...]:
-    parents = commit_parents(repository, merge_sha)
-    if len(parents) != 2:
-        raise PreviewError(
-            f"commit {merge_sha} is not a merge of the pull request into its base: preview "
-            "the test merge a pull_request event checks out, github.sha"
-        )
-    return range_log(repository, parents[0], merge_sha, scope)
+@dataclass(frozen=True, slots=True)
+class PullRequestMerge:
+    """The test merge of a pull request: its commit, its base and the commits it brings in."""
+
+    sha: str
+    base: str
+    commits: frozenset[str]
+
+    @classmethod
+    def read(cls, repository: Path, merge_sha: str) -> PullRequestMerge:
+        """Return the test merge *merge_sha*, read once from git.
+
+        Its commits are the non-merge commits its second parent holds and its
+        first, the head of the base branch, does not: the pull request's own,
+        without the base commits a merge of the base into the branch brought.
+
+        Raises:
+            PreviewError: When *merge_sha* is not a merge of two parents.
+            HistoryError: When git cannot read it.
+        """
+        parents = commit_parents(repository, merge_sha)
+        if len(parents) != 2:
+            raise PreviewError(
+                f"commit {merge_sha} is not a merge of the pull request into its base: "
+                "preview the test merge a pull_request event checks out, github.sha"
+            )
+        commits = range_log(repository, parents[0], merge_sha)
+        return cls(merge_sha, parents[0], frozenset(commits))
 
 
-def pull_request_commits(repository: Path, merge_sha: str) -> frozenset[str]:
-    """Return the commits the test merge *merge_sha* brings into the base branch.
-
-    They are the non-merge commits its second parent holds and its first, the
-    head of the base branch, does not: the commits of the pull request.
-
-    Raises:
-        PreviewError: When *merge_sha* is not a merge of two parents.
-        HistoryError: When git cannot read it.
-    """
-    return frozenset(_brought_in(repository, merge_sha))
-
-
-def as_merged(
+def with_pull_request_merged(
     read: CommitPullRequests, pull_request: OpenPullRequest, commits: frozenset[str]
 ) -> CommitPullRequests:
-    """Return *read*, except that each of *commits* belongs to *pull_request*, merged."""
+    """Return *read*, except that each of *commits* belongs to *pull_request*, merged.
+
+    What GitHub says of those commits, the open pull request under an older
+    title included, is never read: the pull request as it is now wins.
+    """
     merged = (pull_request.as_merged(),)
 
     def reader(sha: str) -> tuple[PullRequest, ...]:
@@ -137,8 +163,11 @@ def _fenced(text: str, info: str) -> str:
 class ReleasePreview:
     """What a labelled merge would release for one package.
 
+    Build it with :meth:`released`, :meth:`nothing` or :meth:`failed`.
+
     Attributes:
         tag_prefix: Prefix of the package's release tags.
+        base_sha:   Head of the base branch the test merge was computed on.
         version:    Version it would release; empty when it releases nothing
             or fails.
         part:       Version part the shipped branches ask for.
@@ -146,10 +175,12 @@ class ReleasePreview:
         notes:      The changelog section, with its link, the release would add.
         error:      The error the release would stop on, as it reports it.
         reason:     Why nothing would be released.
-        touched:    Whether a commit of the pull request touches the paths.
+        touched:    Whether a commit of the pull request is in the release.
+        scoped:     Whether the release is bounded by paths.
     """
 
     tag_prefix: str
+    base_sha: str
     version: str = ""
     part: str = ""
     last_tag: str | None = None
@@ -157,6 +188,35 @@ class ReleasePreview:
     error: str = ""
     reason: str = ""
     touched: bool = True
+    scoped: bool = True
+
+    @classmethod
+    def released(
+        cls,
+        tag_prefix: str,
+        base_sha: str,
+        *,
+        version: str,
+        part: str,
+        last_tag: str | None,
+        notes: str,
+        touched: bool = True,
+        scoped: bool = True,
+    ) -> ReleasePreview:
+        """Return the preview of a release of *version*, adding *notes*."""
+        return cls(
+            tag_prefix, base_sha, version, part, last_tag, notes, touched=touched, scoped=scoped
+        )
+
+    @classmethod
+    def nothing(cls, tag_prefix: str, base_sha: str, reason: str) -> ReleasePreview:
+        """Return the preview of no release, for *reason*."""
+        return cls(tag_prefix, base_sha, reason=reason, touched=False)
+
+    @classmethod
+    def failed(cls, tag_prefix: str, base_sha: str, error: str) -> ReleasePreview:
+        """Return the preview of a release stopping on *error*."""
+        return cls(tag_prefix, base_sha, error=error)
 
     def render(self, changelog_file: str) -> str:
         """Return the package's part of the preview comment, in Markdown."""
@@ -183,9 +243,10 @@ class ReleasePreview:
             "dates the section by its merge commit.\n",
         ]
         if not self.touched:
+            outside = "changes none of its paths" if self.scoped else "brings no commit"
             lines.append(
-                "This pull request changes none of its paths: the section lists what was "
-                "merged before it and is not released yet, which its labelled merge releases.\n"
+                f"This pull request {outside}: the section lists what was merged before it "
+                "and is not released yet, which its labelled merge releases.\n"
             )
         lines.append(_fenced(self.notes, "markdown"))
         return "\n".join(lines)
@@ -193,7 +254,7 @@ class ReleasePreview:
 
 def _preview(
     repository: Path,
-    merge_sha: str,
+    merge: PullRequestMerge,
     pull_request: OpenPullRequest,
     read: CommitPullRequests,
     *,
@@ -203,15 +264,14 @@ def _preview(
     repository_url: str,
     date: str,
 ) -> ReleasePreview:
-    shipping = as_merged(read, pull_request, pull_request_commits(repository, merge_sha))
-    touched = bool(_brought_in(repository, merge_sha, scope))
+    shipping = with_pull_request_merged(read, pull_request, merge.commits)
     try:
-        plan = plan_release(repository, merge_sha, shipping, config=config, scope=scope)
+        plan = plan_release(repository, merge.sha, shipping, config=config, scope=scope)
     except NothingToRelease as nothing:
-        return ReleasePreview(scope.tag_prefix, reason=str(nothing), touched=touched)
+        return ReleasePreview.nothing(scope.tag_prefix, merge.base, str(nothing))
     update = build_changelog(
         repository,
-        merge_sha,
+        merge.sha,
         plan.version,
         shipping,
         changelog_file=changelog_file,
@@ -219,8 +279,15 @@ def _preview(
         repository_url=repository_url,
         date=date,
     )
-    return ReleasePreview(
-        scope.tag_prefix, plan.version, plan.part, plan.last_tag, update.notes, touched=touched
+    return ReleasePreview.released(
+        scope.tag_prefix,
+        merge.base,
+        version=plan.version,
+        part=plan.part,
+        last_tag=plan.last_tag,
+        notes=update.notes,
+        touched=any(entry.sha in merge.commits for entry in plan.shipped),
+        scoped=bool(scope.paths),
     )
 
 
@@ -254,13 +321,17 @@ def preview_release(
         the same message the release prints.
 
     Raises:
-        PreviewError: When *merge_sha* is not a merge of two parents.
-        HistoryError: When git or GitHub cannot be read.
+        PreviewError:   When *merge_sha* is not a merge of two parents.
+        HistoryError:   When git or GitHub cannot be read while planning.
+        ChangelogError: When they cannot be read while writing the section; its
+            ``__cause__`` is the :class:`HistoryError`. Either is no release
+            error but a failure to preview, so the step must fail.
     """
+    merge = PullRequestMerge.read(repository, merge_sha)
     try:
         return _preview(
             repository,
-            merge_sha,
+            merge,
             pull_request,
             read,
             config=config,
@@ -270,9 +341,11 @@ def preview_release(
             date=date,
         )
     except ReleasePlanError as error:
-        return ReleasePreview(scope.tag_prefix, error=f"release plan failed: {error}")
+        return ReleasePreview.failed(scope.tag_prefix, merge.base, f"release plan failed: {error}")
     except ChangelogError as error:
-        return ReleasePreview(scope.tag_prefix, error=f"changelog failed: {error}")
+        if isinstance(error.__cause__, HistoryError):
+            raise
+        return ReleasePreview.failed(scope.tag_prefix, merge.base, f"changelog failed: {error}")
 
 
 def preview_header(merge_sha: str, base_sha: str) -> str:
@@ -323,22 +396,24 @@ def main(arguments: Sequence[str] | None = None) -> int:
     pull_request = OpenPullRequest(
         options.pull_request_number, options.pull_request_title, options.head_ref
     )
+    if not _FULL_SHA.fullmatch(options.merge_sha):
+        _fail(f"merge sha '{options.merge_sha}' is not a full commit sha")
     try:
         preview = preview_release(
             options.repository,
             options.merge_sha,
             pull_request,
-            gh_commit_pull_requests(options.slug),
+            # The plan and the changelog read the same commits: one request each.
+            cache(gh_commit_pull_requests(options.slug)),
             config=Path(options.semantic_branch_config or "pyproject.toml"),
             scope=scope_of(options),
             changelog_file=options.changelog_file,
             repository_url=f"{options.server_url.rstrip('/')}/{options.slug}",
             date=options.date,
         )
-        base_sha = commit_parents(options.repository, options.merge_sha)[0]
-    except (ReleaseScopeError, PreviewError, HistoryError) as error:
+    except (ReleaseScopeError, PreviewError, HistoryError, ChangelogError) as error:
         _fail(str(error))
-    header = preview_header(options.merge_sha, base_sha)
+    header = preview_header(options.merge_sha, preview.base_sha)
     append_preview(options.output, preview.render(options.changelog_file), header)
     print(f"version={preview.version}")
     print(f"failed={'true' if preview.error else 'false'}")
