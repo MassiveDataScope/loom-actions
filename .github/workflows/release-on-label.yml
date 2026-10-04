@@ -72,13 +72,22 @@ on:
         required: false
         type: string
         default: "v"
+      scope-to-package:
+        description: >-
+          Ship only the commits touching package-dir, which must not be the root, or one of
+          shared-paths: they decide the version and fill the changelog and the notes, so
+          another package's pull requests never reach this one, and a labelled merge touching
+          none of them releases nothing. False, the default, ships every commit whatever
+          package-dir is, as before: a package built from files outside package-dir, such as
+          an image built from the root, keeps it false
+        required: false
+        type: boolean
+        default: false
       shared-paths:
         description: >-
-          Paths a monorepo package shares with the others, relative to the repository root and
-          separated by newlines or commas, such as uv.lock. With a package-dir other than the
-          root, the release ships only the commits touching package-dir or one of these: they
-          decide the version and fill the changelog and the notes. A root package ignores them
-          and ships every commit, as before
+          With scope-to-package, the paths the package shares with the others, relative to
+          the repository root and separated by newlines or commas, such as uv.lock. Refused
+          without scope-to-package
         required: false
         type: string
         default: ""
@@ -171,21 +180,30 @@ jobs:
           echo "build-distribution needs package-name to check the built version against the tag."
           exit 1
 
-      # A package of a monorepo ships only the commits touching its directory
-      # and the paths it shares; the root package passes none and ships every
-      # commit. One line, so no input can write another output; the planner
-      # checks each path before reading git.
+      # Opt-in: with scope-to-package a package of a monorepo ships only the
+      # commits touching its directory and the paths it shares. Otherwise no
+      # path is passed and every commit ships, whatever package-dir is. One
+      # line, so no input can write another output; the planner checks each
+      # path before reading git.
       - name: Scope the release to the package
         id: scope
         shell: bash
         env:
           PACKAGE_DIR: ${{ inputs.package-dir }}
           SHARED_PATHS: ${{ inputs.shared-paths }}
+          SCOPE_TO_PACKAGE: ${{ inputs.scope-to-package }}
         run: |
           set -euo pipefail
           PATHS=""
-          if [ -n "${PACKAGE_DIR}" ] && [ "${PACKAGE_DIR}" != "." ]; then
+          if [ "${SCOPE_TO_PACKAGE}" = "true" ]; then
+            if [ -z "${PACKAGE_DIR}" ] || [ "${PACKAGE_DIR}" = "." ]; then
+              echo "scope-to-package needs a package-dir other than the root: the root package ships every commit"
+              exit 1
+            fi
             PATHS="${PACKAGE_DIR}${SHARED_PATHS:+,${SHARED_PATHS}}"
+          elif [ -n "${SHARED_PATHS}" ]; then
+            echo "shared-paths is read only with scope-to-package: true; set it, or drop shared-paths"
+            exit 1
           fi
           PATHS="${PATHS//$'\r'/}"
           echo "paths=${PATHS//$'\n'/,}" >> "$GITHUB_OUTPUT"

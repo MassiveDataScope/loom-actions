@@ -1,16 +1,18 @@
-"""``release-on-label`` scopes a monorepo package's release to its own paths.
+"""``release-on-label`` scopes a monorepo package's release to its own paths, when asked.
 
-A ``package-dir`` other than the root is passed to the planner as the release
-scope, with the optional ``shared-paths`` it shares with the other packages,
-such as ``uv.lock``; another package's pull requests then never raise its
-version nor reach its changelog. A root package — no ``package-dir``, or ``.``
-— passes no path, and the planner ships every commit, as it always did. The
-step runs here as the runner runs it, and its output is read back through the
-planner's own parser.
+Scoping is opt-in: with ``scope-to-package: true`` the ``package-dir`` and the
+optional ``shared-paths``, such as ``uv.lock``, are passed to the planner as the
+release scope, and another package's pull requests never raise the package's
+version nor reach its changelog. Left false, the default, no path is passed
+whatever ``package-dir`` is, and the planner ships every commit, as it always
+did: periplo releases ``package-dir: apps/api`` from an image built at the root,
+so its release must keep reading every commit. The step runs here as the runner
+runs it, and its output is read back through the planner's own parser.
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -30,16 +32,22 @@ def _plan_step() -> dict[str, Any]:
     return next(s for s in wf.steps(NAME, "plan") if s.get("id") == "plan")
 
 
-def _scope(tmp_path: Path, package_dir: str, shared_paths: str = "") -> str:
-    output = tmp_path / "output"
+def _run_scope(
+    tmp_path: Path, package_dir: str, shared_paths: str = "", scoped: bool = True
+) -> subprocess.CompletedProcess[str]:
     env = {
         "PACKAGE_DIR": package_dir,
         "SHARED_PATHS": shared_paths,
-        "GITHUB_OUTPUT": str(output),
+        "SCOPE_TO_PACKAGE": "true" if scoped else "false",
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
     }
-    result = wf.run(NAME, "plan", SCOPE, env, tmp_path)
+    return wf.run(NAME, "plan", SCOPE, env, tmp_path)
+
+
+def _scope(tmp_path: Path, package_dir: str, shared_paths: str = "", scoped: bool = True) -> str:
+    result = _run_scope(tmp_path, package_dir, shared_paths, scoped)
     assert result.returncode == 0, result.stdout + result.stderr
-    return output.read_text("utf-8")
+    return (tmp_path / "output").read_text("utf-8")
 
 
 def _paths(output: str) -> tuple[str, ...]:
@@ -56,12 +64,19 @@ class TestTheInput:
         assert declared["required"] is False
         assert declared["default"] == ""
 
+    def test_scope_to_package_is_an_optional_boolean_defaulting_to_false(self) -> None:
+        declared = wf.call(NAME)["inputs"]["scope-to-package"]
+        assert declared["type"] == "boolean"
+        assert declared["required"] is False
+        assert declared["default"] is False
+
     def test_the_planner_reads_the_scope_the_step_reports(self) -> None:
         step = wf.step(NAME, "plan", SCOPE)
         assert step["id"] == "scope"
         assert step["env"] == {
             "PACKAGE_DIR": "${{ inputs.package-dir }}",
             "SHARED_PATHS": "${{ inputs.shared-paths }}",
+            "SCOPE_TO_PACKAGE": "${{ inputs.scope-to-package }}",
         }
         assert _plan_step()["with"]["paths"] == "${{ steps.scope.outputs.paths }}"
 
@@ -70,16 +85,30 @@ class TestTheInput:
         assert titles.index(SCOPE) == titles.index("Plan the release") - 1
 
 
-class TestARootPackageIsUnchanged:
-    @pytest.mark.parametrize("package_dir", [".", ""])
-    def test_it_passes_no_path(self, tmp_path: Path, package_dir: str) -> None:
-        assert _scope(tmp_path, package_dir) == "paths=\n"
+class TestUnscopedIsUnchanged:
+    """Without scope-to-package every caller ships every commit, as before."""
 
-    def test_shared_paths_do_not_scope_it(self, tmp_path: Path) -> None:
-        assert _scope(tmp_path, ".", "uv.lock") == "paths=\n"
+    @pytest.mark.parametrize("package_dir", [".", "", "apps/api", "apps/control-plane"])
+    def test_it_passes_no_path_whatever_the_package_dir(
+        self, tmp_path: Path, package_dir: str
+    ) -> None:
+        assert _scope(tmp_path, package_dir, scoped=False) == "paths=\n"
 
     def test_the_planner_then_ships_every_commit(self, tmp_path: Path) -> None:
-        assert _paths(_scope(tmp_path, ".")) == ()
+        assert _paths(_scope(tmp_path, "apps/api", scoped=False)) == ()
+
+    def test_shared_paths_without_scope_to_package_are_refused(self, tmp_path: Path) -> None:
+        result = _run_scope(tmp_path, "apps/api", "uv.lock", scoped=False)
+
+        assert result.returncode != 0
+        assert "shared-paths is read only with scope-to-package: true" in result.stdout
+
+    @pytest.mark.parametrize("package_dir", [".", ""])
+    def test_scoping_the_root_package_is_refused(self, tmp_path: Path, package_dir: str) -> None:
+        result = _run_scope(tmp_path, package_dir)
+
+        assert result.returncode != 0
+        assert "scope-to-package needs a package-dir other than the root" in result.stdout
 
 
 class TestAMonorepoPackage:
