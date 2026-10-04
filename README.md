@@ -204,7 +204,8 @@ jobs:
       package-dir: apps/control-plane
       semantic-branch-config: apps/control-plane/pyproject.toml
       tag-prefix: control-plane/v
-      shared-paths: uv.lock # ships the commits touching apps/control-plane or uv.lock
+      scope-to-package: true # ships only the commits touching apps/control-plane ...
+      shared-paths: uv.lock # ... or uv.lock
       changelog: true # keeps apps/control-plane/CHANGELOG.md
 ```
 
@@ -214,11 +215,12 @@ jobs:
 | `base-branch` | `master` | branch the release commit must be on |
 | `build-distribution` | `false` | build a wheel and an sdist at the tag; needs `package-name` |
 | `package-name` | empty | distribution name; the wheel must be `<name>-<version>-py3-none-any.whl` |
-| `package-dir` | `.` | directory of the package, relative to the root, no trailing slash: `uv lock --check`, the build and the wheel name check run there, and `<package-dir>/dist/` is uploaded |
+| `package-dir` | `.` | directory of the package, relative to the root, with no leading or trailing `/` and no empty segment (checked before anything runs): `uv lock --check`, the build and the wheel name check run there, and `<package-dir>/dist/` is uploaded |
 | `semantic-branch-config` | `pyproject.toml` | TOML file, relative to the root, whose `[tool.semantic_branch]` decides the version |
 | `check-distribution` | `false` | run `twine check --strict` (twine 7.0.0) on every built distribution before storing it |
 | `tag-prefix` | `v` | prefix of the release tags: the planner reads `<prefix>X.Y.Z`, the workflow creates it, moves `<prefix>X`, builds at it and names the GitHub Release after it |
-| `shared-paths` | empty | paths, separated by newlines or commas, a package other than the root shares with the others, such as `uv.lock`; the release then ships only the commits touching `package-dir` or one of them |
+| `scope-to-package` | `false` | ship only the commits touching `package-dir` (not the root) or one of `shared-paths`; `false` ships every commit whatever `package-dir` is, as before |
+| `shared-paths` | empty | with `scope-to-package`, the paths the package shares with the others, separated by newlines or commas, such as `uv.lock`; refused without it |
 | `changelog` | `false` | keep `<package-dir>/CHANGELOG.md` in the Keep a Changelog 1.1.0 format, commit it to `base-branch` and use the new section as the GitHub Release body |
 | `python-version`, `uv-version` | `3.11`, `0.10.2` | toolchain of the build |
 | `merge-sha` | empty | commit to release, to resume a run that stopped halfway |
@@ -227,9 +229,13 @@ jobs:
 |---|---|
 | `version` | the version released, `X.Y.Z`; empty when nothing was released |
 | `distribution-built` | `true` once the distributions were built, checked and stored; `false` otherwise |
+| `changelog-committed` | `true` when `base-branch` holds the changelog with the release, committed by this run or already; `false` without `changelog`, or when the commit failed after the release was published |
 
-- The planner (`actions/release/plan-release`) is pinned by the commit of a release, so a
-  caller's SHA pin on this workflow also fixes the planner it runs.
+- The planner (`actions/release/plan-release`) and its `commit-changelog` composite are
+  pinned by the commit of a release, so a caller's SHA pin on this workflow also fixes the
+  planner it runs. Until v1.11.0 is released, both pins in this tree hold a placeholder,
+  `33412af`, which must be replaced with the commit of the v1.11.0 release: that commit is
+  the first to hold the `paths` input and the composite this workflow uses.
 - The workflow passes `tag-prefix` (`v` by default) to the planner it pins (v1.11.0), which
   reads only the tags `<prefix>X.Y.Z` to find the last release and write the notes, so a
   monorepo package released as `control-plane/v0.1.0` never plans from another package's
@@ -237,16 +243,19 @@ jobs:
   the build checks out and the GitHub Release. Letters, digits, `.`, `_`, `-` and `/` only,
   starting with a letter or a digit, without `..`, `//`, `/.` or `.lock/`: the workflow
   checks it with the planner's rule before it plans, tags or releases anything.
-- A `package-dir` other than `.` scopes the release to the package: the planner reads only
-  the commits touching `package-dir` or one of the `shared-paths`
-  (`git log --no-merges --full-history <range> -- <paths>`) to pick the version, raise a
-  declared break to a major, and write the changelog and the notes, so another package's
-  pull requests never reach it. A labelled merge touching none of those paths fails the
-  plan with "nothing to release: no commits touching ..." before any tag is written. A
-  monorepo caller can add the same paths to its `pull_request` trigger so such a merge does
-  not run the package's release at all. A root package passes no path and ships every
-  commit, as before. No path may be absolute, hold `..`, or start with `-` or `:`; the
-  planner refuses one before it reads git.
+- Scoping is opt-in. With `scope-to-package: true` the planner reads only the commits
+  touching `package-dir` or one of the `shared-paths`
+  (`git log --no-merges --full-history <range> -- <paths>`, with literal pathspecs) to pick
+  the version, raise a declared break to a major, and write the changelog and the notes, so
+  another package's pull requests never reach it. A labelled merge touching none of those
+  paths, but the package's own changelog commits, releases nothing: the planner says why in
+  the step summary, no tag, build or release follows, `version` is empty and the run is
+  green. A monorepo caller can add the same paths to its `pull_request` trigger so such a
+  merge does not run the package's release at all. No path may be absolute, hold `..`, or
+  start with `-` or `:`; the planner refuses one before it reads git.
+- Left `false`, the default, no path reaches the planner and every commit since the last
+  `<prefix>` tag ships, whatever `package-dir` is: keep it so for a package built from files
+  outside its directory, such as an image built from the root.
 - The build checks out the tag with its full history, so a version read from git (hatch-vcs,
   setuptools-scm) is the tag's. A wheel with any other version fails the build instead of
   burning a version on the index.
@@ -256,7 +265,8 @@ jobs:
   image job on `needs.release.outputs.version != ''` and its upload on
   `needs.release.outputs.distribution-built == 'true'`.
 - A merge whose branches all belong to `release_ignore` (for example `dependabot/.*`) fails
-  the plan with "nothing to release": no tag, no image, no upload.
+  the plan with "nothing to release": no tag, no image, no upload. So does an unscoped range
+  holding no commit.
 
 #### The changelog
 
@@ -281,22 +291,43 @@ the contents API as `docs(release): changelog for <prefix>X.Y.Z`.
   and their reverts included; its title says what changed for a user. A commit with no pull
   request is listed by its subject.
 - The title is a [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)
-  header: `feat` is Added; `fix` is Fixed, or Security when a scope starts with `sec`;
-  `perf`, `refactor` and `revert` are Changed; `deprecate` is Deprecated and `remove` is
-  Removed, the only titles that fill those sections; `build`, `chore`, `ci`, `docs`, `style`
-  and `test` are left out. A `!`, or a `BREAKING CHANGE:` footer on a commit of the pull
-  request, lists it under Changed as `**BREAKING:**`. Any other type, or a title that is not
-  a header, fails the plan before a tag exists: edit the title and resume with `merge-sha`.
+  header: `feat` is Added; `fix` is Fixed, or Security when the scope, or one of its
+  comma-separated parts, is `sec` or `security`; `perf`, `refactor` and `revert` are
+  Changed; `deprecate` is Deprecated and `remove` is Removed, the only titles that fill
+  those sections; `build`, `chore`, `ci`, `docs`, `style` and `test` are left out. Any other
+  type, `!` or not, or a title that is not a header, such as `feat(): x` with its empty
+  scope, fails the plan before a tag exists: edit the title and resume with `merge-sha`.
+- The title GitHub's revert button writes, `Revert "<title>"`, is listed under Changed as
+  `**Reverted:** <title>`, provided the quoted title is a header.
+- Dependabot titles its pull requests `Bump x from 1 to 2`, which is not a header. Give it
+  one in `.github/dependabot.yml`: `commit-message: {prefix: "build", include: "scope"}`
+  titles them `build(deps): bump x from 1 to 2`, left out of the changelog; `prefix: "fix"`
+  lists them under Fixed.
+- A `!` in the title, or a `BREAKING CHANGE:` footer on a commit of the pull request, lists
+  it under Changed as `**BREAKING:**`, and the planner, reading the same parser, raises the
+  release to a major for it: `2.0.0` after `1.4.2`, and `1.0.0` after `0.3.1`, since the
+  planner treats `0.y.z` the same way. The changelog refuses a breaking entry under any
+  other version.
 - A version the file already lists is left alone, its section is the body, and nothing is
   committed, so resuming a release never lists it twice.
-- The commit names the blob the file was built on: if the file changed on `base-branch`
-  since, GitHub refuses the commit instead of losing that change, and resuming rebuilds it.
+- The commit (plan-release's `commit-changelog` composite) reads the file `base-branch`
+  holds when it runs and adds the release on top with the planner's own update, so a change
+  made since the plan is kept, and a version already listed, say by a re-run that committed
+  first, is not added again. When GitHub answers 409 because the file changed between that
+  read and the commit, it reads again and retries, up to three times, after 1, 2 and 4
+  seconds.
 - The commit changes only `CHANGELOG.md`, which the planner passes over in the next range,
   so it needs no pull request. `base-branch` must accept it from `GITHUB_TOKEN`: a branch
-  protection rule or ruleset that requires a pull request refuses it, and the release job
-  fails after the GitHub Release exists.
-- Like the version, the entries come from every commit since the last `<prefix>` tag, not
-  only the commits under `package-dir`.
+  protection rule or ruleset that requires a pull request refuses it.
+- A failed commit does not fail the run, since the tag and the GitHub Release already exist:
+  the release job warns, in the annotations and the step summary, and `changelog-committed`
+  is `false`. To add the file, re-run all jobs of the run (re-running failed jobs does
+  nothing, as none failed), or run the caller again with `merge-sha` set to the release
+  commit: the tag and the release are kept, the planner finds the version on the branch or
+  builds it again, and the commit adds it.
+- The entries come from the same commits as the version: every commit since the last
+  `<prefix>` tag, or, with `scope-to-package`, only those touching `package-dir` or one of
+  the `shared-paths`.
 
 ### Monorepo callers
 
