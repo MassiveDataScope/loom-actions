@@ -235,9 +235,7 @@ class TestPlanRelease:
         with pytest.raises(ReleasePlanError, match="ships no version"):
             plan_release(repository, only, lambda _sha: ("ci/one",))
 
-    def test_a_commit_carrying_the_only_tag_is_planned_from_the_start(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_commit_carrying_the_only_tag_is_planned_from_the_start(self, tmp_path: Path) -> None:
         repository = _repository(tmp_path, _rules_toml())
         _git(repository, "tag", "v1.10.0")
         head = _git(repository, "rev-parse", "HEAD")
@@ -487,3 +485,56 @@ class TestTagPrefix:
         assert outputs[:2] == outputs[2:4] == outputs[4:]
         assert outputs[0].startswith("last tag : v1.10.0\n")
         assert outputs[1] == '{"version": "1.11.0", "part": "minor"}\n'
+
+
+class TestChangelogCommits:
+    """A release that keeps a changelog commits it with no pull request.
+
+    That commit lands after the release's tag, so the next release reads it. It
+    changes nothing but ``CHANGELOG.md`` files, which ship no version, so the
+    planner passes over it instead of refusing it as a direct push.
+    """
+
+    def _changelog_commit(self, repository: Path, *paths: str) -> str:
+        for path in paths:
+            (repository / path).parent.mkdir(parents=True, exist_ok=True)
+            (repository / path).write_text("# Changelog\n", encoding="utf-8")
+            _git(repository, "add", path)
+        _git(repository, "commit", "-m", "docs(release): changelog for v1.10.0")
+        return _git(repository, "rev-parse", "HEAD")
+
+    @pytest.mark.parametrize(
+        "paths", [("CHANGELOG.md",), ("apps/api/CHANGELOG.md",), ("CHANGELOG.md", "a/CHANGELOG.md")]
+    )
+    def test_a_commit_changing_only_changelogs_is_passed_over(
+        self, tmp_path: Path, paths: tuple[str, ...]
+    ) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        changelog = self._changelog_commit(repository, *paths)
+        merge = _commit(repository, "feat: one")
+        refs = {changelog: (), merge: ("feat/one",)}
+
+        plan = plan_release(repository, merge, lambda sha: refs[sha])
+
+        assert plan.version == "1.11.0"
+        assert [entry.sha for entry in plan.shipped] == [merge]
+
+    @pytest.mark.parametrize("paths", [("README.md",), ("CHANGELOG.md", "src.py")])
+    def test_a_direct_push_touching_anything_else_is_still_refused(
+        self, tmp_path: Path, paths: tuple[str, ...]
+    ) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        pushed = self._changelog_commit(repository, *paths)
+
+        with pytest.raises(ReleasePlanError, match="belongs to no pull request"):
+            plan_release(repository, pushed, lambda _sha: ())
+
+    def test_a_range_holding_only_a_changelog_commit_ships_nothing(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        changelog = self._changelog_commit(repository, "CHANGELOG.md")
+
+        with pytest.raises(ReleasePlanError, match="nothing to release"):
+            plan_release(repository, changelog, lambda _sha: ())

@@ -10,7 +10,7 @@ import sys
 import tomllib
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
 from release_tags import (
@@ -23,6 +23,9 @@ from release_tags import (
 
 _PARTS: Final[tuple[str, ...]] = ("major", "minor", "patch")
 _DEFAULT_CONFIG: Final[Path] = Path("pyproject.toml")
+# The file name Keep a Changelog 1.1.0 gives the changelog, and the only one a
+# release commits with no pull request.
+CHANGELOG_NAME: Final[str] = "CHANGELOG.md"
 
 CommitPullRequests = Callable[[str], tuple[str, ...]]
 
@@ -138,6 +141,31 @@ def commit_message(repository: Path, sha: str) -> str:
     return _run(("git", "-C", str(repository), "log", "-1", "--pretty=%B", sha))
 
 
+def changes_only_changelogs(repository: Path, sha: str) -> bool:
+    """Return whether every path *sha* changes is a ``CHANGELOG.md`` file.
+
+    A release that keeps a changelog commits it to the base branch with no pull
+    request, after its tag, so the next release reads that commit. It ships no
+    version, so the planner passes over it instead of refusing a direct push.
+    """
+    output = _run(
+        (
+            "git",
+            "-C",
+            str(repository),
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-z",
+            "--root",
+            sha,
+        )
+    )
+    paths = [path for path in output.split("\0") if path]
+    return bool(paths) and all(PurePosixPath(path).name == CHANGELOG_NAME for path in paths)
+
+
 def highest_part(parts: Iterable[str | None]) -> str | None:
     """Return the largest part among *parts*, or None when every one ships nothing."""
     present = {part for part in parts if part is not None}
@@ -251,6 +279,27 @@ def gh_commit_pull_requests(slug: str) -> CommitPullRequests:
     return read
 
 
+def _shipped_by(
+    repository: Path,
+    sha: str,
+    commit_pull_requests: CommitPullRequests,
+    rules: Mapping[str, tuple[str, ...]],
+) -> list[ShippedPullRequest]:
+    head_refs = commit_pull_requests(sha)
+    if not head_refs and changes_only_changelogs(repository, sha):
+        return []
+    if not head_refs:
+        raise ReleasePlanError(
+            f"commit {sha} belongs to no pull request: a direct push cannot be classified"
+        )
+    marked = declares_break(commit_message(repository, sha))
+    shipped = []
+    for head_ref in head_refs:
+        branch_part = classify_branch(head_ref, rules)
+        shipped.append(ShippedPullRequest(sha, head_ref, "major" if marked else branch_part))
+    return shipped
+
+
 def plan_release(
     repository: Path,
     merge_sha: str,
@@ -265,7 +314,9 @@ def plan_release(
     feature never ships as a patch. A commit declaring a break — a ``!`` in its
     subject or a ``BREAKING CHANGE:`` footer — asks for a major whatever its
     branch asks for. A commit with no pull request, or one whose branch matches
-    no declared class, refuses the release instead of lowering it.
+    no declared class, refuses the release instead of lowering it; the one
+    exception is a commit that changes only ``CHANGELOG.md`` files, which a
+    release keeping a changelog pushes and which ships no version.
 
     Args:
         repository:           Checkout to read tags and commits from.
@@ -298,15 +349,7 @@ def plan_release(
     rules = branch_rules(repository, config)
     shipped: list[ShippedPullRequest] = []
     for sha in commits:
-        head_refs = commit_pull_requests(sha)
-        if not head_refs:
-            raise ReleasePlanError(
-                f"commit {sha} belongs to no pull request: a direct push cannot be classified"
-            )
-        marked = declares_break(commit_message(repository, sha))
-        for head_ref in head_refs:
-            branch_part = classify_branch(head_ref, rules)
-            shipped.append(ShippedPullRequest(sha, head_ref, "major" if marked else branch_part))
+        shipped.extend(_shipped_by(repository, sha, commit_pull_requests, rules))
 
     part = highest_part(entry.part for entry in shipped)
     if part is None:
