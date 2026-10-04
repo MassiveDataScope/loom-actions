@@ -178,8 +178,10 @@ def _shipped_by(
     shipped = []
     for pull_request in pull_requests:
         branch_part = classify_branch(pull_request.head_ref, rules)
-        part = "major" if marked else branch_part
-        shipped.append(ShippedPullRequest(sha, pull_request.head_ref, part))
+        breaking = marked or declares_break(pull_request.title)
+        shipped.append(
+            ShippedPullRequest(sha, pull_request.head_ref, "major" if breaking else branch_part)
+        )
     return shipped
 
 
@@ -198,8 +200,9 @@ def plan_release(
 
     The part is the highest one any shipped branch asks for, so a batch holding a
     feature never ships as a patch. A commit declaring a break — a ``!`` in its
-    subject or a ``BREAKING CHANGE:`` footer — asks for a major whatever its
-    branch asks for. A commit with no pull request, or one whose branch matches
+    subject or a ``BREAKING CHANGE:`` footer — or a pull request whose title
+    carries the ``!`` asks for a major whatever its branch asks for, so the
+    version agrees with the ``**BREAKING:**`` entries of the changelog. A commit with no pull request, or one whose branch matches
     no declared class, refuses the release instead of lowering it; the one
     exception is a commit that changes only ``CHANGELOG.md`` files, which a
     release keeping a changelog pushes and which ships no version.

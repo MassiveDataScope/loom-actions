@@ -192,6 +192,17 @@ class TestPlanRelease:
 
         assert (plan.part, plan.version) == ("major", "2.0.0")
 
+    def test_a_breaking_pull_request_title_ships_a_major(self, tmp_path: Path) -> None:
+        """The changelog lists the title as BREAKING, so the version must be a major."""
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "v1.10.0")
+        unmarked = _commit(repository, "feat: rename the field")
+        titled = PullRequest(1, "feat(api)!: rename the field", "feat/rename", True)
+
+        plan = plan_release(repository, unmarked, lambda _sha: (titled,))
+
+        assert (plan.part, plan.version) == ("major", "2.0.0")
+
     def test_an_empty_scope_is_no_header_so_its_bang_ships_no_major(self, tmp_path: Path) -> None:
         """Conventional Commits 1.0.0 item 4: ``()`` holds no noun; the changelog refuses it too."""
         repository = _repository(tmp_path, _rules_toml())
