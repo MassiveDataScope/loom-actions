@@ -29,6 +29,15 @@ inputs:
       and "/" only.
     required: false
     default: "v"
+  changelog-file:
+    description: >
+      CHANGELOG.md to add the release to, relative to the checkout, such as
+      apps/control-plane/CHANGELOG.md; it follows Keep a Changelog 1.1.0 and is created when
+      missing. Its new section, one entry per merged pull request title, becomes the notes.
+      The file is left in the working tree for the caller to commit. Empty, the default,
+      writes the notes as before and touches no file.
+    required: false
+    default: ""
 
 outputs:
   version:
@@ -40,6 +49,9 @@ outputs:
   notes-file:
     description: "File holding the release notes"
     value: ${{ inputs.notes-output }}
+  changelog-changed:
+    description: "Whether changelog-file gained the release; false when it already listed it"
+    value: ${{ steps.changelog.outputs.changed }}
 
 runs:
   using: composite
@@ -77,7 +89,30 @@ runs:
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
 
+    # Runs in the checkout as the caller left it, the head of the base branch,
+    # so the file gains the release on top of what that branch holds now.
+    - name: Update the changelog
+      id: changelog
+      if: ${{ inputs.changelog-file != '' }}
+      shell: bash
+      env:
+        MERGE_SHA: ${{ inputs.merge-sha }}
+        REPOSITORY_SLUG: ${{ inputs.repository-slug }}
+        VERSION: ${{ steps.plan.outputs.version }}
+        NOTES_OUTPUT: ${{ inputs.notes-output }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        CHANGELOG_FILE: ${{ inputs.changelog-file }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/src/changelog_file.py" \
+          --merge-sha "${MERGE_SHA}" --slug "${REPOSITORY_SLUG}" --version "${VERSION}" \
+          --tag-prefix="${TAG_PREFIX}" --changelog-file "${CHANGELOG_FILE}" \
+          --notes-output "${NOTES_OUTPUT}" >> "$GITHUB_OUTPUT"
+
     - name: Write the release notes
+      if: ${{ inputs.changelog-file == '' }}
       shell: bash
       env:
         MERGE_SHA: ${{ inputs.merge-sha }}
