@@ -29,6 +29,16 @@ inputs:
       and "/" only.
     required: false
     default: "v"
+  paths:
+    description: >
+      Paths the release ships, relative to the checkout and separated by newlines or commas,
+      such as apps/control-plane and uv.lock: only the commits changing one of them count
+      for the version, the declared breaks, the changelog and the notes, so a monorepo
+      package never ships another package's pull requests. A range with no such commit
+      fails the plan with "nothing to release". No path may be absolute, hold "..", or
+      start with "-" or ":". Empty, the default, ships every commit as before.
+    required: false
+    default: ""
   changelog-file:
     description: >
       CHANGELOG.md to add the release to, relative to the checkout, such as
@@ -66,6 +76,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         SEMANTIC_BRANCH_CONFIG: ${{ inputs.semantic-branch-config }}
         TAG_PREFIX: ${{ inputs.tag-prefix }}
+        RELEASE_PATHS: ${{ inputs.paths }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -103,6 +114,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         TAG_PREFIX: ${{ inputs.tag-prefix }}
         CHANGELOG_FILE: ${{ inputs.changelog-file }}
+        RELEASE_PATHS: ${{ inputs.paths }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -119,6 +131,7 @@ runs:
         VERSION: ${{ steps.plan.outputs.version }}
         NOTES_OUTPUT: ${{ inputs.notes-output }}
         TAG_PREFIX: ${{ inputs.tag-prefix }}
+        RELEASE_PATHS: ${{ inputs.paths }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
