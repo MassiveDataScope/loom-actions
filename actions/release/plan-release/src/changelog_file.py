@@ -55,6 +55,7 @@ from pathlib import Path, PurePosixPath
 from typing import Final, NoReturn
 
 from conventional_commits import ConventionalCommit, declares_break
+from plan_release import next_version
 from release_history import (
     CHANGELOG_NAME,
     CommitPullRequests,
@@ -123,10 +124,11 @@ class Change:
 
 @dataclass(frozen=True, slots=True)
 class Entry:
-    """One line of the changelog, and the section it belongs to."""
+    """One line of the changelog, the section it belongs to, and whether it breaks."""
 
     section: str
     text: str
+    breaking: bool = False
 
 
 def check_changelog_file(path: str) -> PurePosixPath:
@@ -200,7 +202,7 @@ def classify(change: Change) -> Entry | None:
         text = f"**BREAKING:** {text}"
     if change.reference:
         text = f"{text} ({change.reference})"
-    return Entry(section, text)
+    return Entry(section, text, breaking)
 
 
 def shipped_changes(
@@ -365,6 +367,27 @@ def release_date(repository: Path, sha: str) -> str:
     return datetime.fromtimestamp(commit_timestamp(repository, sha), tz=UTC).date().isoformat()
 
 
+def _require_major_for_break(
+    entries: Sequence[Entry], version: str, last_tag: str | None, tag_prefix: str
+) -> None:
+    """Refuse a **BREAKING:** entry under a *version* that is not the major after *last_tag*.
+
+    The major is the one the planner raises for a break, by
+    :func:`plan_release.next_version`: on ``0.y.z`` too, a break ships ``1.0.0``.
+
+    Raises:
+        ChangelogError: When an entry breaks and *version* is another one.
+    """
+    if not any(entry.breaking for entry in entries):
+        return
+    major = next_version(last_tag, "major", tag_prefix)
+    if version != major:
+        raise ChangelogError(
+            f"the release lists a breaking change, so its version must be the major after "
+            f"{last_tag or 'no tag'}: {version} is not {major}"
+        )
+
+
 def build_changelog(
     repository: Path,
     merge_sha: str,
@@ -379,8 +402,9 @@ def build_changelog(
 
     Raises:
         ChangelogError: When the file is not allowed, git cannot read the range,
-            the file does not keep a changelog, or a title is not a
-            Conventional Commits header with a known type.
+            the file does not keep a changelog, a title is not a Conventional
+            Commits header with a known type, or a break ships under a
+            version that is not a major.
     """
     path = repository / check_changelog_file(changelog_file)
     try:
@@ -395,6 +419,7 @@ def build_changelog(
     except HistoryError as error:
         raise ChangelogError(str(error)) from error
     entries = [entry for change in changes if (entry := classify(change)) is not None]
+    _require_major_for_break(entries, version, last_tag, scope.tag_prefix)
     links = release_links(repository_url, scope.tag_prefix, version, last_tag)
     return update_changelog(text, version, render_section(version, date, entries), links)
 

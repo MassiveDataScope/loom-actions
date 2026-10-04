@@ -139,7 +139,9 @@ class TestClassify:
 
     def test_a_footer_declaring_the_break_lists_it_as_breaking_too(self) -> None:
         entry = classify(_change("fix: drop the parameter", breaking=True))
-        assert entry == Entry("Changed", f"**BREAKING:** drop the parameter ([#7]({URL}/pull/7))")
+        assert entry == Entry(
+            "Changed", f"**BREAKING:** drop the parameter ([#7]({URL}/pull/7))", breaking=True
+        )
 
     def test_a_security_fix_that_breaks_is_listed_as_breaking(self) -> None:
         entry = classify(_change("fix(security)!: refuse plain HTTP"))
@@ -615,6 +617,47 @@ class TestBuildChangelog:
         assert exited.value.code == 1
         assert "changelog failed: tag prefix '-v' is not allowed" in capsys.readouterr().err
         assert not (repository / "CHANGELOG.md").exists()
+
+
+class TestABreakNeedsAMajor:
+    """A **BREAKING:** entry under a version that is not a major would contradict SemVer.
+
+    The planner raises a major for the same marks, so this only fails a version
+    passed by hand. On 0.x the planner's major is 1.0.0, so a break is too.
+    """
+
+    def _build(self, tmp_path: Path, last_tag: str, version: str) -> str:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", last_tag)
+        merge = _commit(repository, "feat: rename the field")
+        _, notes = build_changelog(
+            repository,
+            merge,
+            version,
+            _reader({merge: (_pr(1, "feat(api)!: rename the field"),)}),
+            changelog_file="CHANGELOG.md",
+            scope=ReleaseScope("v"),
+            repository_url=URL,
+        )
+        return notes
+
+    @pytest.mark.parametrize(
+        ("last_tag", "version", "major"),
+        [("v1.2.0", "1.3.0", "2.0.0"), ("v1.2.0", "1.2.1", "2.0.0"), ("v0.3.0", "0.4.0", "1.0.0")],
+    )
+    def test_a_break_under_another_version_is_refused(
+        self, tmp_path: Path, last_tag: str, version: str, major: str
+    ) -> None:
+        with pytest.raises(ChangelogError, match=f"{version} is not {major}"):
+            self._build(tmp_path, last_tag, version)
+
+    @pytest.mark.parametrize(("last_tag", "version"), [("v1.2.0", "2.0.0"), ("v0.3.0", "1.0.0")])
+    def test_a_break_under_the_major_is_listed(
+        self, tmp_path: Path, last_tag: str, version: str
+    ) -> None:
+        notes = self._build(tmp_path, last_tag, version)
+
+        assert "- **BREAKING:** **api:** rename the field" in notes
 
 
 def _touch(repository: Path, path: str, message: str) -> str:
