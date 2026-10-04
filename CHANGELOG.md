@@ -1,3 +1,127 @@
+# 🚀 Release 1.12.0 ([#69](https://github.com/MassiveDataScope/loom-actions/pull/69)) ([`d2b0098`](https://github.com/MassiveDataScope/loom-actions/commit/d2b00989d13ea4cb9297008ba3e24b915288dd9d))
+
+
+## ✨ Features
+### release-on-label
+- **release-on-label:** keep and commit the package changelog<br>
+  > A new boolean input, changelog (false by default), keeps
+  > <package-dir>/CHANGELOG.md, or the root's for package-dir ".". The plan
+  > job passes it to plan-release as changelog-file, so the planner adds the
+  > release to the file at the head of the base branch before any tag is
+  > written and the notes, the GitHub Release body, are the new section. The
+  > plan job records the blob the file was built on and stores the file.
+  > Once the GitHub Release exists, the release job commits the file to the
+  > base branch through the contents API (PUT repos/{repo}/contents/{path})
+  > as "docs(release): changelog for <prefix>X.Y.Z". It needs no checkout and
+  > no persisted credential, and it names the blob, so a branch whose file
+  > changed since refuses it instead of losing that change. A re-run finds the
+  > version already listed and commits nothing. The commit changes only
+  > CHANGELOG.md, which the planner passes over in the next range. Inputs and
+  > outputs reach the scripts through env only.
+  > Left false, no new step runs, the steps a caller ran keep their order and
+  > the permissions are the same; the default plan-release scripts and notes
+  > are compared byte for byte in test_plan_release_changelog_contract.py.
+  > The planner pin moves to 33412af, the tip of feature/release-changelog-file
+  > that adds changelog-file, labelled v1.11.0: that is a placeholder until
+  > that branch is released, when the pin must name the v1.11.0 release
+  > commit, as #61 was released as v1.9.0 before #63 pinned it.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **release-on-label:** scope a monorepo package's release to its paths<br>
+  > A package-dir other than the root is now passed to the planner as the
+  > release scope, with the new optional shared-paths input (such as
+  > uv.lock), so another package's pull requests never raise the package's
+  > version nor reach its changelog. A step reports the scope on one line, so
+  > no input can write another output; a root package passes no path and
+  > ships every commit, as before.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **release-on-label:** release nothing when a scoped package has no commit<br>
+  > With scope-to-package, a labelled merge that touched only other
+  > packages now plans an empty version instead of failing: the plan job
+  > stores no notes and writes no tag, the build and release jobs are
+  > skipped, the version output is empty and the run is green, with the
+  > planner's step summary saying why.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### release-on-label
+- **release-on-label:** scope a package's release only when the caller asks<br>
+  > Any caller passing a package-dir other than the root had its release
+  > silently scoped to that directory, so a caller that builds an image
+  > from the root with package-dir: apps/api would ship only the commits
+  > under apps/api. Scoping is now opt-in through scope-to-package, false
+  > by default: left alone, no path reaches the planner and every caller
+  > ships every commit, as before. shared-paths without it, or scoping the
+  > root package, is refused instead of ignored.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **release-on-label:** refuse a package-dir with a trailing slash or an empty segment<br>
+  > The input said "without a trailing slash" but nothing checked it, and
+  > apps/api/ names apps/api//CHANGELOG.md in the contents API path. The
+  > plan job now refuses a leading or trailing "/" and an empty segment
+  > before it checks anything out.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **release-on-label:** warn instead of failing when the changelog commit fails<br>
+  > The changelog commit ran last in the release job, after the tag and
+  > the GitHub Release existed, so a refused commit failed the workflow of
+  > a release that had shipped, and its re-run failed again over the stale
+  > blob it was built on.
+  > The release job now commits through plan-release's commit-changelog
+  > composite, pinned with the planner, which reads the branch again and
+  > retries a 409. The download and the commit continue on error; a failure
+  > is a warning, also in the step summary, that names the release and how
+  > to add the file: re-run all jobs, or run the caller with merge-sha. The
+  > changelog-committed output says whether the branch holds the release.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **release-on-label:** name the run's artifacts after the tag prefix<br>
+  > A caller releasing two packages from one workflow run uploaded two
+  > release-notes and two changelog artifacts under the same names. Each
+  > name now ends with the tag prefix, "/" turned into "-": release-notes-v
+  > by default, changelog-control-plane-v for control-plane/v. The
+  > distributions artifact a caller publishes keeps its name.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+## 📖 Documentation
+### readme
+- **readme:** document the changelog input of release-on-label<br>
+  > Describe what changelog: true writes and commits, the standard each rule
+  > follows (Keep a Changelog 1.1.0, SemVer 2.0.0, ISO 8601, Conventional
+  > Commits 1.0.0), the type-to-section mapping, idempotence, the blob guard,
+  > and that a base branch requiring pull requests refuses the commit. Name
+  > the v1.11.0 planner pin and add the input to the monorepo example.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **readme:** document how release-on-label scopes a monorepo package<br>
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **readme:** document scope-to-package, the no-op and the changelog commit<br>
+  > The README said the changelog entries came from every commit whatever
+  > package-dir is, which stopped being true once a scope reached the
+  > planner. It now documents scoping as opt-in through scope-to-package,
+  > the green no-op of a scoped merge touching none of the package's paths,
+  > the changelog-committed output, the commit that re-reads the branch and
+  > retries a 409, how to recover when it fails, the exact security scope,
+  > revert-button titles, Dependabot's commit-message prefix, the major a
+  > break raises, and that the pins hold a placeholder to replace with the
+  > commit of the v1.11.0 release.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.11.0 ([#67](https://github.com/MassiveDataScope/loom-actions/pull/67)) ([`b69b72a`](https://github.com/MassiveDataScope/loom-actions/commit/b69b72a9d861507bf92357b7e3b554f385a8635c))
 
 
