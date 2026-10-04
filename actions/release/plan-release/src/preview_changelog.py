@@ -24,11 +24,9 @@ other commit is read from GitHub as the release reads it. So the preview shows:
 
 It matches the release when both run the same plan-release source. The release
 runs the planner release-on-label pins, while the preview runs the one its
-caller pins; release-on-label pins v1.11.0, whose planner and changelog give the
-version and section this source gives (what changed since only adds an
-optional date, :func:`release_history.commit_parents` and argument parsing
-shared through :mod:`release_scope`). The pin moves to the
-release that ships this preview in a follow-up.
+caller pins: pin both to the same loom-actions release.
+``tests/unit/test_plan_release_preview_contract.py`` records which planner
+release-on-label pins and fails when this source differs from it.
 
 It is exact for merge-commit and rebase merges, whose commits reach the base
 branch as they are. A squash merge ships one commit GitHub writes, and the
