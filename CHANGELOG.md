@@ -1,3 +1,20 @@
+# 🚀 Release 1.13.1 ([#73](https://github.com/MassiveDataScope/loom-actions/pull/73)) ([`b7a986f`](https://github.com/MassiveDataScope/loom-actions/commit/b7a986f628c9fb7c8e60a52189091e1ac6e8dd32))
+
+
+
+## 🐛 Fixes
+### release-on-label
+- **release-on-label:** pin the planner to v1.13.0, the release with the preview
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.13.0 ([#71](https://github.com/MassiveDataScope/loom-actions/pull/71)) ([`18483ac`](https://github.com/MassiveDataScope/loom-actions/commit/18483ac9fee7d89e0eae0fb3e0dfd65f1347faa8))
 
 
