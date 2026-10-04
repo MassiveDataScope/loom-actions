@@ -67,10 +67,14 @@ def latest_release_tag(repository: Path, prefix: str = DEFAULT_TAG_PREFIX) -> st
     return None
 
 
-def release_entries(repository: Path, last_tag: str | None) -> tuple[str, ...]:
-    """Return one entry per non-merge commit that the release ships."""
+def release_entries(
+    repository: Path, last_tag: str | None, scope: ReleaseScope = DEFAULT_SCOPE
+) -> tuple[str, ...]:
+    """Return one entry per non-merge commit of *scope* that the release ships."""
     revision_range = f"{last_tag}..HEAD" if last_tag else "HEAD"
-    output = _run_git(repository, "log", "--no-merges", "--pretty=%s", revision_range)
+    output = _run_git(
+        repository, "log", "--no-merges", "--pretty=%s", revision_range, *scope.log_limits
+    )
     return tuple(line.strip() for line in output.splitlines() if line.strip())
 
 
@@ -88,7 +92,7 @@ def render_release_notes(version: str, last_tag: str | None, entries: Sequence[s
 def build_release_notes(repository: Path, version: str, scope: ReleaseScope = DEFAULT_SCOPE) -> str:
     """Return the notes for every commit between the last reachable tag of *scope* and HEAD."""
     last_tag = latest_release_tag(repository, scope.tag_prefix)
-    return render_release_notes(version, last_tag, release_entries(repository, last_tag))
+    return render_release_notes(version, last_tag, release_entries(repository, last_tag, scope))
 
 
 def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:

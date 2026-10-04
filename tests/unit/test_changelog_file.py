@@ -615,6 +615,71 @@ class TestBuildChangelog:
         assert not (repository / "CHANGELOG.md").exists()
 
 
+def _touch(repository: Path, path: str, message: str) -> str:
+    target = repository / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(message, "utf-8")
+    _git(repository, "add", path)
+    _git(
+        repository,
+        "commit",
+        "-m",
+        message,
+        env={"GIT_COMMITTER_DATE": MERGED_AT, "GIT_AUTHOR_DATE": MERGED_AT},
+    )
+    return _git(repository, "rev-parse", "HEAD")
+
+
+class TestPathScope:
+    """A package of a monorepo lists only the pull requests that touch its paths."""
+
+    def _build(self, repository: Path, merge: str, readers: dict[str, tuple[PullRequest, ...]]):  # type: ignore[no-untyped-def]
+        return build_changelog(
+            repository,
+            merge,
+            "0.2.0",
+            _reader(readers),
+            changelog_file="apps/app-a/CHANGELOG.md",
+            scope=ReleaseScope("app-a/v", ("apps/app-a",)),
+            repository_url=URL,
+        )
+
+    def test_only_the_pull_requests_touching_the_package_are_listed(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "app-a/v0.1.0")
+        mine = _touch(repository, "apps/app-a/src.py", "feat(app-a): one")
+        other = _touch(repository, "apps/app-b/src.py", "fix(app-b): two")
+        both = _touch(repository, "apps/app-a/x.py", "fix: three") and _touch(
+            repository, "apps/app-b/x.py", "fix: three"
+        )
+        both_first = _git(repository, "rev-parse", "HEAD~1")
+        readers = {
+            mine: (PullRequest(1, "feat(app-a): one"),),
+            other: (PullRequest(2, "fix(app-b): two"),),
+            both_first: (PullRequest(3, "fix: three"),),
+            both: (PullRequest(3, "fix: three"),),
+        }
+
+        _, notes = self._build(repository, both, readers)
+
+        assert notes == (
+            "## [0.2.0] - 2026-10-04\n\n### Added\n\n"
+            f"- **app-a:** one ([#1]({URL}/pull/1))\n\n### Fixed\n\n"
+            f"- three ([#3]({URL}/pull/3))\n\n"
+            f"[0.2.0]: {URL}/compare/app-a/v0.1.0...app-a/v0.2.0\n"
+        )
+
+    def test_another_packages_changelog_commit_is_not_read(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "app-a/v0.1.0")
+        _touch(repository, "apps/app-b/CHANGELOG.md", "# Changelog\n")
+        mine = _touch(repository, "apps/app-a/src.py", "fix(app-a): one")
+
+        _, notes = self._build(repository, mine, {mine: (PullRequest(4, "fix(app-a): one"),)})
+
+        assert f"- **app-a:** one ([#4]({URL}/pull/4))" in notes
+
+
 class TestMain:
     def _run(
         self,

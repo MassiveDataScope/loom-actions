@@ -253,11 +253,22 @@ def latest_release_tag(
     return None
 
 
-def shipped_commits(repository: Path, last_tag: str | None, merge_sha: str) -> tuple[str, ...]:
-    """Return every commit the release ships, oldest last."""
+def shipped_commits(
+    repository: Path, last_tag: str | None, merge_sha: str, scope: ReleaseScope = DEFAULT_SCOPE
+) -> tuple[str, ...]:
+    """Return every commit of *scope* the release ships, oldest last."""
     revision_range = f"{last_tag}..{merge_sha}" if last_tag else merge_sha
     output = _run(
-        ("git", "-C", str(repository), "log", "--no-merges", "--pretty=%H", revision_range)
+        (
+            "git",
+            "-C",
+            str(repository),
+            "log",
+            "--no-merges",
+            "--pretty=%H",
+            revision_range,
+            *scope.log_limits,
+        )
     )
     return tuple(line.strip() for line in output.splitlines() if line.strip())
 
@@ -276,7 +287,7 @@ def breaking_commits(
     last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
     return tuple(
         sha
-        for sha in shipped_commits(repository, last_tag, merge_sha)
+        for sha in shipped_commits(repository, last_tag, merge_sha, scope)
         if declares_break(commit_message(repository, sha))
     )
 
@@ -346,6 +357,9 @@ def plan_release(
 ) -> ReleasePlan:
     """Return the release *merge_sha* ships, from the branches merged since the last tag.
 
+    Only the commits of *scope* count: with paths, the commits that change one
+    of them, for the part, the declared breaks and the shipped list alike.
+
     The part is the highest one any shipped branch asks for, so a batch holding a
     feature never ships as a patch. A commit declaring a break — a ``!`` in its
     subject or a ``BREAKING CHANGE:`` footer — asks for a major whatever its
@@ -367,15 +381,13 @@ def plan_release(
         The planned release.
 
     Raises:
-        ReleasePlanError: When the range is empty, *config* does not exist, a commit has no pull request, a branch is
+        ReleasePlanError: When the range holds no commit of *scope*, *config* does not exist, a commit has no pull request, a branch is
             unclassified, or nothing in the range ships a version.
     """
     last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
-    commits = shipped_commits(repository, last_tag, merge_sha)
+    commits = shipped_commits(repository, last_tag, merge_sha, scope)
     if not commits:
-        raise ReleasePlanError(
-            f"nothing to release: no commits since {last_tag or 'the start of history'}"
-        )
+        raise ReleasePlanError(scope.no_commits(last_tag))
 
     rules = branch_rules(repository, config)
     shipped: list[ShippedPullRequest] = []

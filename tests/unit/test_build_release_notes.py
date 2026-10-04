@@ -100,6 +100,21 @@ class TestReleaseEntries:
 
         assert release_entries(repository, None) == ("feat: one", "chore: initial")
 
+    def test_lists_only_the_commits_touching_the_scope(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "app-a/v1.0.0")
+        (repository / "apps" / "app-a").mkdir(parents=True)
+        (repository / "apps" / "app-a" / "src.py").write_text("x", "utf-8")
+        _git(repository, "add", ".")
+        _git(repository, "commit", "-m", "fix(app-a): one")
+        _commit(repository, "feat: elsewhere")
+
+        entries = release_entries(
+            repository, "app-a/v1.0.0", ReleaseScope("app-a/v", ("apps/app-a",))
+        )
+
+        assert entries == ("fix(app-a): one",)
+
 
 class TestRenderReleaseNotes:
     def test_names_the_range_the_release_ships(self) -> None:

@@ -16,7 +16,8 @@ and link references at the bottom that compare one release tag with the next.
   reverts of them included; its title says what it changed for a user. A
   commit that came from no pull request is listed by its own subject.
 - The range is the one the planner ships: every commit since the last tag of
-  the prefix, in the whole repository, not only under the package directory.
+  the prefix that changes a path of the release scope, or every commit when the
+  scope names no path.
 - A version already in the file is left as it is and its section is the notes,
   so re-running a release never lists it twice.
 
@@ -208,8 +209,12 @@ def shipped_changes(
     merge_sha: str,
     pull_requests: CommitMergedPullRequests,
     repository_url: str,
+    scope: ReleaseScope = DEFAULT_SCOPE,
 ) -> tuple[Change, ...]:
     """Return one change per merged pull request the release ships, then each lone commit.
+
+    Only the commits of *scope* are read, so a pull request is listed when one
+    of its commits changes a path of the scope.
 
     Pull requests come in number order, lone commits oldest first. A commit
     that changes only ``CHANGELOG.md`` files is a previous release's changelog
@@ -217,7 +222,7 @@ def shipped_changes(
     """
     merged: dict[int, tuple[PullRequest, bool]] = {}
     lone: list[Change] = []
-    for sha in reversed(shipped_commits(repository, last_tag, merge_sha)):
+    for sha in reversed(shipped_commits(repository, last_tag, merge_sha, scope)):
         found = pull_requests(sha)
         if not found and changes_only_changelogs(repository, sha):
             continue
@@ -383,7 +388,9 @@ def build_changelog(
         if (found := ChangelogDocument.parse(text).notes(version)) is not None:
             return text, found
         last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
-        changes = shipped_changes(repository, last_tag, merge_sha, pull_requests, repository_url)
+        changes = shipped_changes(
+            repository, last_tag, merge_sha, pull_requests, repository_url, scope
+        )
         date = release_date(repository, merge_sha)
     except ReleasePlanError as error:
         raise ChangelogError(str(error)) from error

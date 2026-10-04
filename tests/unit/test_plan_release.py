@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "actions" / "release" / "plan
 import plan_release as plan_release_module  # noqa: E402
 from plan_release import (  # noqa: E402
     ReleasePlanError,
+    breaking_commits,
     classify_branch,
     declares_break,
     highest_part,
@@ -545,3 +546,148 @@ class TestChangelogCommits:
 
         with pytest.raises(ReleasePlanError, match="nothing to release"):
             plan_release(repository, changelog, lambda _sha: ())
+
+
+def _touch(repository: Path, path: str, message: str) -> str:
+    target = repository / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"{target.read_text('utf-8') if target.exists() else ''}{message}\n", "utf-8")
+    _git(repository, "add", path)
+    _git(repository, "commit", "-m", message)
+    return _git(repository, "rev-parse", "HEAD")
+
+
+class TestPathScope:
+    """A package of a monorepo ships only the commits that touch its paths."""
+
+    APP_A = ReleaseScope("app-a/v", ("apps/app-a", "uv.lock"))
+
+    def _monorepo(self, tmp_path: Path) -> Path:
+        repository = _repository(tmp_path, _rules_toml())
+        _git(repository, "tag", "app-a/v0.1.0")
+        return repository
+
+    def test_another_packages_feature_does_not_raise_this_ones_part(self, tmp_path: Path) -> None:
+        repository = self._monorepo(tmp_path)
+        fix = _touch(repository, "apps/app-a/src.py", "fix(app-a): one")
+        feature = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
+        refs = {fix: ("fix/one",), feature: ("feat/two",)}
+
+        plan = plan_release(repository, feature, lambda sha: refs[sha], scope=self.APP_A)
+
+        assert (plan.part, plan.version) == ("patch", "0.1.1")
+        assert [entry.sha for entry in plan.shipped] == [fix]
+
+    def test_a_shared_path_ships_with_the_package(self, tmp_path: Path) -> None:
+        repository = self._monorepo(tmp_path)
+        lock = _touch(repository, "uv.lock", "fix(deps): bump the lock")
+        _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
+        head = _git(repository, "rev-parse", "HEAD")
+        refs = {lock: ("fix/lock",)}
+
+        plan = plan_release(repository, head, lambda sha: refs[sha], scope=self.APP_A)
+
+        assert [entry.sha for entry in plan.shipped] == [lock]
+
+    def test_another_packages_declared_break_ships_no_major_here(self, tmp_path: Path) -> None:
+        repository = self._monorepo(tmp_path)
+        fix = _touch(repository, "apps/app-a/src.py", "fix(app-a): one")
+        marked = _touch(repository, "apps/app-b/src.py", "feat(app-b)!: drop the field")
+        refs = {fix: ("fix/one",), marked: ("feat/drop",)}
+
+        plan = plan_release(repository, marked, lambda sha: refs[sha], scope=self.APP_A)
+
+        assert plan.part == "patch"
+        assert breaking_commits(repository, marked, self.APP_A) == ()
+        assert breaking_commits(repository, marked, ReleaseScope("app-a/v")) == (marked,)
+
+    def test_no_commit_touching_the_paths_is_nothing_to_release(self, tmp_path: Path) -> None:
+        repository = self._monorepo(tmp_path)
+        other = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
+
+        with pytest.raises(ReleasePlanError) as refused:
+            plan_release(repository, other, lambda _sha: ("feat/two",), scope=self.APP_A)
+
+        assert str(refused.value) == (
+            "nothing to release: no commits touching apps/app-a, uv.lock since app-a/v0.1.0"
+        )
+
+    def test_a_change_made_and_undone_on_a_merged_branch_still_ships(self, tmp_path: Path) -> None:
+        """git log simplifies a path's history and would drop the branch; the plan must not."""
+        repository = self._monorepo(tmp_path)
+        _git(repository, "checkout", "-q", "-b", "feat/try")
+        tried = _touch(repository, "apps/app-a/src.py", "feat(app-a): try it")
+        undone = _git(repository, "revert", "--no-edit", tried) and _git(
+            repository, "rev-parse", "HEAD"
+        )
+        _git(repository, "checkout", "-q", "master")
+        _git(repository, "merge", "--no-ff", "-q", "-m", "Merge feat/try", "feat/try")
+        merge = _git(repository, "rev-parse", "HEAD")
+        refs = {tried: ("feat/try",), undone: ("feat/try",)}
+
+        plan = plan_release(repository, merge, lambda sha: refs[sha], scope=self.APP_A)
+
+        assert sorted(entry.sha for entry in plan.shipped) == sorted([tried, undone])
+
+    def test_the_command_line_reads_the_paths_from_the_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        repository = self._monorepo(tmp_path)
+        fix = _touch(repository, "apps/app-a/src.py", "fix(app-a): one")
+        feature = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
+        refs = {fix: ("fix/one",), feature: ("feat/two",)}
+        monkeypatch.setattr(
+            plan_release_module, "gh_commit_pull_requests", lambda _slug: refs.__getitem__
+        )
+        monkeypatch.setenv("RELEASE_PATHS", "apps/app-a\nuv.lock")
+        base = ["--repository", str(repository), "--merge-sha", feature, "--slug", "o/r"]
+
+        assert main([*base, "--tag-prefix=app-a/v", "--format", "github"]) == 0
+        assert capsys.readouterr().out == '{"version": "0.1.1", "part": "patch"}\n'
+
+    def test_an_unsafe_path_fails_the_plan_before_git_is_read(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("RELEASE_PATHS", "apps/app-a,/etc")
+        missing = tmp_path / "no-repository"
+
+        with pytest.raises(SystemExit) as exited:
+            main(["--repository", str(missing), "--merge-sha", "HEAD", "--slug", "o/r"])
+
+        assert exited.value.code == 1
+        assert capsys.readouterr().err.startswith("release plan failed: path '/etc' is not allowed")
+
+    def test_no_paths_plans_byte_for_byte_as_before(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        repository = self._monorepo(tmp_path)
+        _git(repository, "tag", "v1.0.0")
+        fix = _touch(repository, "apps/app-a/src.py", "fix(app-a): one")
+        feature = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
+        refs = {fix: ("fix/one",), feature: ("feat/two",)}
+        monkeypatch.setattr(
+            plan_release_module, "gh_commit_pull_requests", lambda _slug: refs.__getitem__
+        )
+        base = ["--repository", str(repository), "--merge-sha", feature, "--slug", "o/r"]
+
+        outputs = []
+        for environment in (None, ""):
+            if environment is None:
+                monkeypatch.delenv("RELEASE_PATHS", raising=False)
+            else:
+                monkeypatch.setenv("RELEASE_PATHS", environment)
+            for output_format in ("text", "github"):
+                assert main([*base, "--format", output_format]) == 0
+                outputs.append(capsys.readouterr().out)
+
+        assert outputs[:2] == outputs[2:]
+        assert outputs[1] == '{"version": "1.1.0", "part": "minor"}\n'
