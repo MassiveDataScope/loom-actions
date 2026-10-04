@@ -270,7 +270,8 @@ class TestUpdateChangelog:
     def test_a_new_file_starts_with_the_standard_header_and_an_unreleased_section(
         self,
     ) -> None:
-        text, notes = update_changelog("", "0.2.0", SECTION_020, LINKS_020)
+        update = update_changelog("", "0.2.0", SECTION_020, LINKS_020)
+        text, notes = update.text, update.notes
 
         assert text == (
             "# Changelog\n"
@@ -295,7 +296,7 @@ class TestUpdateChangelog:
         assert notes == SECTION_020 + "\n" + LINKS_020[1] + "\n"
 
     def test_the_newest_version_goes_first_and_the_links_follow(self) -> None:
-        text, _ = update_changelog(EXISTING, "0.2.0", SECTION_020, LINKS_020)
+        text = update_changelog(EXISTING, "0.2.0", SECTION_020, LINKS_020).text
 
         assert text == (
             INTRO + "\n"
@@ -323,20 +324,21 @@ class TestUpdateChangelog:
             "## [Unreleased]\n", "## [Unreleased]\n\n### Added\n\n- planned by hand\n"
         )
 
-        text, _ = update_changelog(existing, "0.2.0", SECTION_020, LINKS_020)
+        text = update_changelog(existing, "0.2.0", SECTION_020, LINKS_020).text
 
         assert "## [Unreleased]\n\n### Added\n\n- planned by hand\n\n## [0.2.0]" in text
 
     def test_a_version_already_listed_is_not_listed_twice(self) -> None:
-        once, notes = update_changelog(EXISTING, "0.2.0", SECTION_020, LINKS_020)
+        once = update_changelog(EXISTING, "0.2.0", SECTION_020, LINKS_020)
 
-        twice, notes_again = update_changelog(once, "0.2.0", "## [0.2.0] - 2027-01-01\n", LINKS_020)
+        twice = update_changelog(once.text, "0.2.0", "## [0.2.0] - 2027-01-01\n", LINKS_020)
 
-        assert twice == once
-        assert notes_again == notes
+        assert (once.changed, twice.changed) == (True, False)
+        assert (twice.text, twice.notes) == (once.text, once.notes)
 
     def test_a_rerun_of_the_first_release_keeps_its_notes(self) -> None:
-        text, notes = update_changelog(EXISTING, "0.1.0", "## [0.1.0] - 2027-01-01\n", ())
+        update = update_changelog(EXISTING, "0.1.0", "## [0.1.0] - 2027-01-01\n", ())
+        text, notes = update.text, update.notes
 
         assert text == EXISTING
         assert notes == (
@@ -555,7 +557,7 @@ class TestBuildChangelog:
     def test_periplo_clouds_first_control_plane_release(self, tmp_path: Path) -> None:
         repository, merge, pull_requests = _periplo(tmp_path)
 
-        text, notes = build_changelog(
+        update = build_changelog(
             repository,
             merge,
             "0.1.0",
@@ -564,6 +566,7 @@ class TestBuildChangelog:
             scope=ReleaseScope("control-plane/v"),
             repository_url="https://github.com/MassiveDataScope/periplo-cloud",
         )
+        text, notes = update.text, update.notes
 
         assert text == PERIPLO_CHANGELOG
         assert notes == (
@@ -584,7 +587,7 @@ class TestBuildChangelog:
         # 01:30 in Madrid on the 5th is still the 4th in UTC.
         merge = _commit(repository, "feat: one", when="2026-10-05T01:30:00+02:00")
 
-        text, _ = build_changelog(
+        text = build_changelog(
             repository,
             merge,
             "0.2.0",
@@ -592,7 +595,7 @@ class TestBuildChangelog:
             changelog_file="CHANGELOG.md",
             scope=ReleaseScope("v"),
             repository_url=URL,
-        )
+        ).text
 
         assert "## [0.2.0] - 2026-10-04\n" in text
 
@@ -604,7 +607,7 @@ class TestBuildChangelog:
         target.write_text(PERIPLO_CHANGELOG, "utf-8")
         renamed = {sha: (_pr(1, "S0 skeleton"),) for sha in pull_requests}
 
-        text, _ = build_changelog(
+        text = build_changelog(
             repository,
             merge,
             "0.1.0",
@@ -612,7 +615,7 @@ class TestBuildChangelog:
             changelog_file="apps/control-plane/CHANGELOG.md",
             scope=ReleaseScope("control-plane/v"),
             repository_url="https://github.com/MassiveDataScope/periplo-cloud",
-        )
+        ).text
 
         assert text == PERIPLO_CHANGELOG
 
@@ -645,7 +648,7 @@ class TestABreakNeedsAMajor:
         repository = _repository(tmp_path)
         _git(repository, "tag", last_tag)
         merge = _commit(repository, "feat: rename the field")
-        _, notes = build_changelog(
+        notes = build_changelog(
             repository,
             merge,
             version,
@@ -653,7 +656,7 @@ class TestABreakNeedsAMajor:
             changelog_file="CHANGELOG.md",
             scope=ReleaseScope("v"),
             repository_url=URL,
-        )
+        ).notes
         return notes
 
     @pytest.mark.parametrize(
@@ -720,7 +723,7 @@ class TestPathScope:
             both: (_pr(3, "fix: three"),),
         }
 
-        _, notes = self._build(repository, both, readers)
+        notes = self._build(repository, both, readers).notes
 
         assert notes == (
             "## [0.2.0] - 2026-10-04\n\n### Added\n\n"
@@ -735,7 +738,7 @@ class TestPathScope:
         _touch(repository, "apps/app-b/CHANGELOG.md", "# Changelog\n")
         mine = _touch(repository, "apps/app-a/src.py", "fix(app-a): one")
 
-        _, notes = self._build(repository, mine, {mine: (_pr(4, "fix(app-a): one"),)})
+        notes = self._build(repository, mine, {mine: (_pr(4, "fix(app-a): one"),)}).notes
 
         assert f"- **app-a:** one ([#4]({URL}/pull/4))" in notes
 

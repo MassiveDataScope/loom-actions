@@ -367,24 +367,33 @@ def _strip_blank(lines: Sequence[str], *, leading: bool) -> tuple[str, ...]:
     return tuple(lines[first:last])
 
 
+@dataclass(frozen=True, slots=True)
+class ChangelogUpdate:
+    """The changelog a release leaves, its notes, and whether the file changed."""
+
+    text: str
+    notes: str
+    changed: bool
+
+
 def update_changelog(
     text: str, version: str, section: str, links: Sequence[str]
-) -> tuple[str, str]:
+) -> ChangelogUpdate:
     """Return *text* with *section* added on top, and the notes of the release.
 
     *links* holds the ``[unreleased]`` reference first and the version's next.
-    A version *text* already lists is left as it is. Empty *text* starts the
-    file with the standard header.
+    A version *text* already lists is left as it is, unchanged. Empty *text*
+    starts the file with the standard header.
 
     Raises:
         ChangelogError: When *text* has no ``## [Unreleased]`` heading.
     """
     document = ChangelogDocument.parse(text)
     if (found := document.notes(version)) is not None:
-        return text, found
-    return document.with_release(section, links).render(), (
-        section.rstrip("\n") + f"\n\n{links[1]}\n"
-    )
+        return ChangelogUpdate(text, found, changed=False)
+    updated = document.with_release(section, links)
+    notes = section.rstrip("\n") + f"\n\n{links[1]}\n"
+    return ChangelogUpdate(updated.render(), notes, changed=True)
 
 
 def release_date(repository: Path, sha: str) -> str:
@@ -422,7 +431,7 @@ def build_changelog(
     changelog_file: str,
     scope: ReleaseScope = DEFAULT_SCOPE,
     repository_url: str,
-) -> tuple[str, str]:
+) -> ChangelogUpdate:
     """Return the changelog with the release *merge_sha* ships, and its notes.
 
     Raises:
@@ -435,7 +444,7 @@ def build_changelog(
     try:
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         if (found := ChangelogDocument.parse(text).notes(version)) is not None:
-            return text, found
+            return ChangelogUpdate(text, found, changed=False)
         last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
         changes = shipped_changes(
             repository, last_tag, merge_sha, pull_requests, repository_url, scope
@@ -477,7 +486,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     """Write the changelog and the notes, and print ``changed=`` for ``$GITHUB_OUTPUT``."""
     options = _parse_args(arguments)
     try:
-        text, notes = build_changelog(
+        update = build_changelog(
             options.repository,
             options.merge_sha,
             options.version,
@@ -488,13 +497,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
         )
     except (ReleaseScopeError, ChangelogError) as error:
         _fail(str(error))
-    path = options.repository / check_changelog_file(options.changelog_file)
-    changed = not path.is_file() or path.read_text(encoding="utf-8") != text
-    if changed:
+    if update.changed:
+        # build_changelog checked the path before reading it.
+        path = options.repository / options.changelog_file
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    options.notes_output.write_text(notes, encoding="utf-8")
-    print(f"changed={'true' if changed else 'false'}")
+        path.write_text(update.text, encoding="utf-8")
+    options.notes_output.write_text(update.notes, encoding="utf-8")
+    print(f"changed={'true' if update.changed else 'false'}")
     return 0
 
 
