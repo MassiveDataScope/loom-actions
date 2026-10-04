@@ -204,6 +204,7 @@ jobs:
       package-dir: apps/control-plane
       semantic-branch-config: apps/control-plane/pyproject.toml
       tag-prefix: control-plane/v
+      changelog: true # keeps apps/control-plane/CHANGELOG.md
 ```
 
 | Input | Default | Effect |
@@ -216,6 +217,7 @@ jobs:
 | `semantic-branch-config` | `pyproject.toml` | TOML file, relative to the root, whose `[tool.semantic_branch]` decides the version |
 | `check-distribution` | `false` | run `twine check --strict` (twine 7.0.0) on every built distribution before storing it |
 | `tag-prefix` | `v` | prefix of the release tags: the planner reads `<prefix>X.Y.Z`, the workflow creates it, moves `<prefix>X`, builds at it and names the GitHub Release after it |
+| `changelog` | `false` | keep `<package-dir>/CHANGELOG.md` in the Keep a Changelog 1.1.0 format, commit it to `base-branch` and use the new section as the GitHub Release body |
 | `python-version`, `uv-version` | `3.11`, `0.10.2` | toolchain of the build |
 | `merge-sha` | empty | commit to release, to resume a run that stopped halfway |
 
@@ -226,7 +228,7 @@ jobs:
 
 - The planner (`actions/release/plan-release`) is pinned by the commit of a release, so a
   caller's SHA pin on this workflow also fixes the planner it runs.
-- The workflow passes `tag-prefix` (`v` by default) to the planner it pins (v1.9.0), which
+- The workflow passes `tag-prefix` (`v` by default) to the planner it pins (v1.11.0), which
   reads only the tags `<prefix>X.Y.Z` to find the last release and write the notes, so a
   monorepo package released as `control-plane/v0.1.0` never plans from another package's
   tags. The same prefix names the tag the workflow creates, the major tag it moves, the tag
@@ -243,6 +245,46 @@ jobs:
   `needs.release.outputs.distribution-built == 'true'`.
 - A merge whose branches all belong to `release_ignore` (for example `dependabot/.*`) fails
   the plan with "nothing to release": no tag, no image, no upload.
+
+#### The changelog
+
+With `changelog: true` the planner adds the release to `<package-dir>/CHANGELOG.md` (the
+root's `CHANGELOG.md` for `package-dir: .`), taken from the head of `base-branch` and created
+when missing, before any tag is written. The GitHub Release body is the new section, with
+its link. Once the release exists, the release job commits the file to `base-branch` through
+the contents API as `docs(release): changelog for <prefix>X.Y.Z`.
+
+- [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): the standard header and
+  intro, `## [Unreleased]` kept on top, newest version first, `## [X.Y.Z] - YYYY-MM-DD`, the
+  sections Added, Changed, Deprecated, Removed, Fixed and Security in that order with empty
+  ones left out, and link references at the bottom: `[X.Y.Z]` compares the previous
+  `<prefix>` tag with the new one, `[unreleased]` compares the new one with `HEAD`. An
+  existing file without an `## [Unreleased]` heading fails the plan; notes written by hand
+  under it are kept there.
+- [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html): the heading carries `X.Y.Z`, never the
+  prefix. [ISO 8601](https://www.iso.org/iso-8601-date-and-time-format.html): the date is the
+  UTC calendar date of the release commit, so a re-run writes the same one.
+- One entry per merged pull request, from its title, linked to it. A pull request merged
+  with a merge commit brings every commit of its branch into the range, intermediate commits
+  and their reverts included; its title says what changed for a user. A commit with no pull
+  request is listed by its subject.
+- The title is a [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)
+  header: `feat` is Added; `fix` is Fixed, or Security when a scope starts with `sec`;
+  `perf`, `refactor` and `revert` are Changed; `deprecate` is Deprecated and `remove` is
+  Removed, the only titles that fill those sections; `build`, `chore`, `ci`, `docs`, `style`
+  and `test` are left out. A `!`, or a `BREAKING CHANGE:` footer on a commit of the pull
+  request, lists it under Changed as `**BREAKING:**`. Any other type, or a title that is not
+  a header, fails the plan before a tag exists: edit the title and resume with `merge-sha`.
+- A version the file already lists is left alone, its section is the body, and nothing is
+  committed, so resuming a release never lists it twice.
+- The commit names the blob the file was built on: if the file changed on `base-branch`
+  since, GitHub refuses the commit instead of losing that change, and resuming rebuilds it.
+- The commit changes only `CHANGELOG.md`, which the planner passes over in the next range,
+  so it needs no pull request. `base-branch` must accept it from `GITHUB_TOKEN`: a branch
+  protection rule or ruleset that requires a pull request refuses it, and the release job
+  fails after the GitHub Release exists.
+- Like the version, the entries come from every commit since the last `<prefix>` tag, not
+  only the commits under `package-dir`.
 
 ### Monorepo callers
 
