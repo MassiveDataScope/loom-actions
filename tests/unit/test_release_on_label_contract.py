@@ -48,7 +48,7 @@ class TestBuildingIsOptIn:
         assert publish["required"] is False
 
     def test_nothing_is_built_when_building_is_off(self) -> None:
-        assert _job("build")["if"] == "${{ inputs.build-distribution }}"
+        assert _job("build")["if"].startswith("${{ inputs.build-distribution && ")
 
     def test_no_upload_happens_here(self) -> None:
         """PyPI's trusted publishing rejects a token minted for a reusable workflow."""

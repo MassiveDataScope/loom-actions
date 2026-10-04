@@ -128,3 +128,29 @@ class TestAMonorepoPackage:
 
         assert len(output.splitlines()) == 1
         assert output.startswith("paths=apps/a,uv.lock,version=9.9.9")
+
+
+RELEASED = "steps.plan.outputs.version != ''"
+
+
+class TestNothingToRelease:
+    """A scoped merge touching none of the package's paths plans an empty version.
+
+    The planner then succeeds, says why in the step summary and writes no notes;
+    the workflow writes no tag, builds nothing and publishes no release, and the
+    run is green.
+    """
+
+    @pytest.mark.parametrize("title", ["Store release notes", "Create the immutable version tag"])
+    def test_the_plan_job_writes_nothing_after_the_plan(self, title: str) -> None:
+        assert wf.step(NAME, "plan", title)["if"] == f"${{{{ {RELEASED} }}}}"
+
+    def test_no_build_and_no_release_run(self) -> None:
+        jobs = wf.jobs(NAME)
+        assert jobs["build"]["if"] == (
+            "${{ inputs.build-distribution && needs.plan.outputs.version != '' }}"
+        )
+        assert jobs["release"]["if"] == (
+            "${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure'"
+            " && needs.plan.outputs.version != '' }}"
+        )

@@ -102,7 +102,9 @@ on:
         default: false
     outputs:
       version:
-        description: "Version the release published"
+        description: >-
+          Version the release published; empty when scope-to-package found no commit
+          touching the package since its last tag, and nothing was released
         value: ${{ jobs.plan.outputs.version }}
       distribution-built:
         description: "Whether a distribution was built and left as an artifact"
@@ -237,7 +239,10 @@ jobs:
           paths: ${{ steps.scope.outputs.paths }}
           changelog-file: ${{ env.CHANGELOG_FILE }}
 
+      # A scoped release whose paths no merged commit touched plans an empty
+      # version; the planner says so in the step summary, and nothing follows.
       - name: Store release notes
+        if: ${{ steps.plan.outputs.version != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-notes
@@ -269,6 +274,7 @@ jobs:
       # Before the build, because a version derived from the tag needs the tag to
       # exist. Idempotent, so a halted release can be re-run.
       - name: Create the immutable version tag
+        if: ${{ steps.plan.outputs.version != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.plan.outputs.version }}
@@ -301,7 +307,7 @@ jobs:
 
   build:
     needs: plan
-    if: ${{ inputs.build-distribution }}
+    if: ${{ inputs.build-distribution && needs.plan.outputs.version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -386,7 +392,7 @@ jobs:
 
   release:
     needs: [plan, build]
-    if: ${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure' }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure' && needs.plan.outputs.version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
