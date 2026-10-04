@@ -34,8 +34,10 @@ inputs:
       Paths the release ships, relative to the checkout and separated by newlines or commas,
       such as apps/control-plane and uv.lock: only the commits changing one of them count
       for the version, the declared breaks, the changelog and the notes, so a monorepo
-      package never ships another package's pull requests. A range with no such commit
-      fails the plan with "nothing to release". No path may be absolute, hold "..", or
+      package never ships another package's pull requests. A range with no such commit,
+      but the package's own changelog commits, releases nothing: the version output is
+      empty, the step summary says why, no notes or changelog are written and the step
+      succeeds. Paths are literal, never globs. No path may be absolute, hold "..", or
       start with "-" or ":". Empty, the default, ships every commit as before.
     required: false
     default: ""
@@ -51,7 +53,7 @@ inputs:
 
 outputs:
   version:
-    description: "Version the release publishes"
+    description: "Version the release publishes; empty when a scoped release has nothing to ship"
     value: ${{ steps.plan.outputs.version }}
   part:
     description: "Version part the shipped branches asked for"
@@ -100,11 +102,25 @@ runs:
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
 
+    # A scoped release whose paths no commit touched plans an empty version and
+    # succeeds; the caller skips its tag and release on that empty output.
+    - name: Report that nothing is released
+      if: ${{ steps.plan.outputs.version == '' }}
+      shell: bash
+      env:
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+      run: |
+        set -euo pipefail
+        {
+          echo
+          echo "Nothing to release for ${TAG_PREFIX}: no commit since its last tag touches its paths, so no tag, GitHub Release, notes or changelog is written."
+        } >> "$GITHUB_STEP_SUMMARY"
+
     # Runs in the checkout as the caller left it, the head of the base branch,
     # so the file gains the release on top of what that branch holds now.
     - name: Update the changelog
       id: changelog
-      if: ${{ inputs.changelog-file != '' }}
+      if: ${{ inputs.changelog-file != '' && steps.plan.outputs.version != '' }}
       shell: bash
       env:
         MERGE_SHA: ${{ inputs.merge-sha }}
@@ -124,7 +140,7 @@ runs:
           --notes-output "${NOTES_OUTPUT}" >> "$GITHUB_OUTPUT"
 
     - name: Write the release notes
-      if: ${{ inputs.changelog-file == '' }}
+      if: ${{ inputs.changelog-file == '' && steps.plan.outputs.version != '' }}
       shell: bash
       env:
         MERGE_SHA: ${{ inputs.merge-sha }}

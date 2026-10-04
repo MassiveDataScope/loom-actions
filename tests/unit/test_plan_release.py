@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "actions" / "release" / "plan
 
 import plan_release as plan_release_module  # noqa: E402
 from plan_release import (  # noqa: E402
+    NothingToRelease,
     ReleasePlanError,
     breaking_commits,
     classify_branch,
@@ -633,12 +634,85 @@ class TestPathScope:
         repository = self._monorepo(tmp_path)
         other = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
 
-        with pytest.raises(ReleasePlanError) as refused:
+        with pytest.raises(NothingToRelease) as refused:
             plan_release(repository, other, _prs(default=("feat/two",)), scope=self.APP_A)
 
         assert str(refused.value) == (
             "nothing to release: no commits touching apps/app-a, uv.lock since app-a/v0.1.0"
         )
+
+    def test_only_its_own_changelog_commit_is_nothing_to_release_too(self, tmp_path: Path) -> None:
+        """The commit a release pushes after its tag touches the package's CHANGELOG.md."""
+        repository = self._monorepo(tmp_path)
+        _touch(repository, "apps/app-a/CHANGELOG.md", "docs(release): changelog")
+        other = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
+        refs = {other: ("feat/two",)}
+
+        with pytest.raises(NothingToRelease, match="no commits touching apps/app-a"):
+            plan_release(repository, other, _prs(refs), scope=self.APP_A)
+
+    def test_a_scoped_range_of_ignored_branches_is_still_a_failure(self, tmp_path: Path) -> None:
+        repository = self._monorepo(tmp_path)
+        ci = _touch(repository, "apps/app-a/ci.yml", "ci(app-a): one")
+
+        with pytest.raises(ReleasePlanError, match="ships no version") as refused:
+            plan_release(repository, ci, _prs(default=("ci/one",)), scope=self.APP_A)
+        assert not isinstance(refused.value, NothingToRelease)
+
+    def test_an_unscoped_range_shipping_nothing_is_still_a_failure(self, tmp_path: Path) -> None:
+        repository = self._monorepo(tmp_path)
+        _git(repository, "tag", "v1.0.0")
+        changelog = _touch(repository, "CHANGELOG.md", "docs(release): changelog")
+
+        with pytest.raises(ReleasePlanError, match="nothing to release") as refused:
+            plan_release(repository, changelog, _prs())
+        assert not isinstance(refused.value, NothingToRelease)
+
+    @pytest.mark.parametrize(
+        ("output_format", "printed"),
+        [
+            ("github", '{"version": "", "part": ""}\n'),
+            ("text", "nothing to release: no commits touching apps/app-a since app-a/v0.1.0\n"),
+        ],
+    )
+    def test_the_command_line_reports_a_scoped_no_op_and_succeeds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        output_format: str,
+        printed: str,
+    ) -> None:
+        repository = self._monorepo(tmp_path)
+        other = _touch(repository, "apps/app-b/src.py", "feat(app-b): two")
+        monkeypatch.setattr(
+            plan_release_module, "gh_commit_pull_requests", lambda _slug: _prs(default=("feat/x",))
+        )
+        base = ["--repository", str(repository), "--merge-sha", other, "--slug", "o/r"]
+
+        code = main(
+            [*base, "--tag-prefix=app-a/v", "--paths=apps/app-a", "--format", output_format]
+        )
+
+        assert (code, capsys.readouterr().out) == (0, printed)
+
+    def test_the_command_line_still_fails_an_unscoped_range_shipping_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        repository = self._monorepo(tmp_path)
+        _git(repository, "tag", "v1.0.0")
+        _touch(repository, "CHANGELOG.md", "docs(release): changelog")
+        monkeypatch.setattr(plan_release_module, "gh_commit_pull_requests", lambda _slug: _prs())
+        base = ["--repository", str(repository), "--merge-sha", "HEAD", "--slug", "o/r"]
+
+        with pytest.raises(SystemExit) as exited:
+            main([*base, "--paths=", "--format", "github"])
+
+        assert exited.value.code == 1
+        assert "nothing to release" in capsys.readouterr().err
 
     def test_a_change_made_and_undone_on_a_merged_branch_still_ships(self, tmp_path: Path) -> None:
         """git log simplifies a path's history and would drop the branch; the plan must not."""

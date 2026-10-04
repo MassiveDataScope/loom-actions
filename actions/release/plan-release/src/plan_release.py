@@ -40,6 +40,15 @@ class ReleasePlanError(RuntimeError):
     """Raised when the release a merge would ship cannot be determined."""
 
 
+class NothingToRelease(ReleasePlanError):
+    """Raised when no commit since the last tag touches the paths of a scoped release.
+
+    A monorepo package's release runs for every labelled merge, so a merge that
+    changed only other packages is no anomaly: the release is a no-op, not a
+    failure. An unscoped release with nothing to ship still fails.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ShippedPullRequest:
     """One pull request the release ships, and the part its branch asks for."""
@@ -185,6 +194,11 @@ def _shipped_by(
     return shipped
 
 
+def _nothing_to_release(scope: ReleaseScope, last_tag: str | None) -> ReleasePlanError:
+    message = scope.no_commits(last_tag)
+    return NothingToRelease(message) if scope.paths else ReleasePlanError(message)
+
+
 def plan_release(
     repository: Path,
     merge_sha: str,
@@ -221,6 +235,8 @@ def plan_release(
         The planned release.
 
     Raises:
+        NothingToRelease: When *scope* has paths and no commit since the last
+            tag, but its own changelog commits, touches them.
         ReleasePlanError: When the range holds no commit of *scope*, *config*
             does not exist, a commit has no merged pull request, a branch is
             unclassified, or nothing in the range ships a version.
@@ -229,12 +245,15 @@ def plan_release(
     last_tag = latest_release_tag(repository, merge_sha, scope.tag_prefix)
     commits = range_log(repository, last_tag, merge_sha, scope)
     if not commits:
-        raise ReleasePlanError(scope.no_commits(last_tag))
+        raise _nothing_to_release(scope, last_tag)
 
     rules = branch_rules(repository, config)
     shipped: list[ShippedPullRequest] = []
     for sha in commits:
         shipped.extend(_shipped_by(repository, sha, commit_pull_requests, rules))
+    if not shipped and scope.paths:
+        # Only the package's own changelog commits, which ship no version.
+        raise NothingToRelease(scope.no_commits(last_tag))
 
     part = highest_part(entry.part for entry in shipped)
     if part is None:
@@ -263,7 +282,8 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
         "--format",
         choices=("text", "github"),
         default="text",
-        help="text prints the plan for an operator; github writes version and part outputs",
+        help="text prints the plan for an operator; github writes version and part outputs, "
+        "both empty when a scoped release has nothing to ship",
     )
     return parser.parse_args(arguments)
 
@@ -283,6 +303,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
             config=Path(options.semantic_branch_config or _DEFAULT_CONFIG),
             scope=scope_of(options),
         )
+    except NothingToRelease as nothing:
+        print(json.dumps({"version": "", "part": ""}) if options.format == "github" else nothing)
+        return 0
     except (ReleaseScopeError, ReleasePlanError, HistoryError) as error:
         _fail(str(error))
     if options.format == "github":

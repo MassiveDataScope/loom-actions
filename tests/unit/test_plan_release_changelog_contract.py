@@ -117,8 +117,8 @@ class TestTheDefaultIsUnchanged:
         assert _step(NOTES)["run"] == NOTES_SCRIPT
 
     def test_the_notes_are_written_unless_a_changelog_is_named(self) -> None:
-        assert _step(NOTES)["if"] == "${{ inputs.changelog-file == '' }}"
-        assert _step(CHANGELOG)["if"] == "${{ inputs.changelog-file != '' }}"
+        assert _step(NOTES)["if"].startswith("${{ inputs.changelog-file == '' && ")
+        assert _step(CHANGELOG)["if"].startswith("${{ inputs.changelog-file != '' && ")
 
     def test_the_default_notes_are_byte_identical(self, tmp_path: Path) -> None:
         repository, merge = _repository(tmp_path)
@@ -146,7 +146,7 @@ class TestTheDefaultIsUnchanged:
 class TestTheChangelogStep:
     def test_it_runs_after_the_plan_and_instead_of_the_notes(self) -> None:
         titles = [s["name"] for s in _steps()]
-        assert titles == [PLAN, CHANGELOG, NOTES]
+        assert titles == [PLAN, "Report that nothing is released", CHANGELOG, NOTES]
         assert _step(CHANGELOG)["id"] == "changelog"
 
     def test_inputs_reach_the_script_through_the_environment_only(self) -> None:

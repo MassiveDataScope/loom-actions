@@ -20,6 +20,7 @@ import yaml
 COMPOSITE = Path(__file__).parents[2] / "actions" / "release" / "plan-release"
 RULES = '[tool.semantic_branch]\nminor = ["feat/.*"]\npatch = ["fix/.*"]\n'
 SCOPED = ("Plan the release", "Update the changelog", "Write the release notes")
+REPORT = "Report that nothing is released"
 
 
 def _action() -> dict[str, Any]:
@@ -138,17 +139,33 @@ class TestTheSteps:
         assert planned.returncode == 0, planned.stderr
         assert planned.stdout.count("fix/change") == 2
 
-    def test_no_commit_touching_the_paths_is_nothing_to_release(self, tmp_path: Path) -> None:
+    def test_no_commit_touching_the_paths_releases_nothing_and_succeeds(
+        self, tmp_path: Path
+    ) -> None:
         repository, _, merge = _monorepo(tmp_path)
+        env = _env(tmp_path, merge, "apps/c")
 
-        planned = _run("Plan the release", tmp_path, repository, _env(tmp_path, merge, "apps/c"))
+        planned = _run("Plan the release", tmp_path, repository, env)
+        reported = _run(REPORT, tmp_path, repository, env)
 
-        assert planned.returncode != 0
-        assert planned.stderr == (
-            "release plan failed: nothing to release: "
-            "no commits touching apps/c since app-a/v0.1.0\n"
+        assert planned.returncode == 0, planned.stderr
+        assert reported.returncode == 0, reported.stderr
+        assert (tmp_path / "outputs.txt").read_text("utf-8") == "version=\npart=\n"
+        summary = (tmp_path / "summary.md").read_text("utf-8")
+        assert "nothing to release: no commits touching apps/c since app-a/v0.1.0" in summary
+        assert summary.endswith(
+            "Nothing to release for app-a/v: no commit since its last tag touches its paths, "
+            "so no tag, GitHub Release, notes or changelog is written.\n"
         )
-        assert not (tmp_path / "outputs.txt").exists()
+
+    def test_with_no_version_only_the_report_runs(self) -> None:
+        assert _step(REPORT)["if"] == "${{ steps.plan.outputs.version == '' }}"
+        assert _step("Update the changelog")["if"] == (
+            "${{ inputs.changelog-file != '' && steps.plan.outputs.version != '' }}"
+        )
+        assert _step("Write the release notes")["if"] == (
+            "${{ inputs.changelog-file == '' && steps.plan.outputs.version != '' }}"
+        )
 
     @pytest.mark.parametrize("paths", ["/etc", "apps/../..", "--all", ":(top)"])
     def test_an_unsafe_path_fails_before_anything_is_written(
