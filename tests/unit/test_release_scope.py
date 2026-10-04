@@ -60,6 +60,16 @@ class TestPaths:
 
         assert scope == ReleaseScope("app-a/v", ("apps/app-a", "uv.lock"))
 
+    def test_a_scope_built_directly_is_normalised_too(self) -> None:
+        scope = ReleaseScope("app-a/v", ("./apps/app-a/", "apps/app-a", "uv.lock", "apps//app-a"))
+
+        assert scope.paths == ("apps/app-a", "uv.lock")
+        assert scope == ReleaseScope.parse("app-a/v", "apps/app-a,uv.lock")
+
+    def test_an_empty_path_is_refused_not_read_as_the_root(self) -> None:
+        with pytest.raises(ReleaseScopeError, match="path '' is not allowed"):
+            ReleaseScope("v", ("",))
+
     @pytest.mark.parametrize(
         "path", ["/etc", "../x", "apps/../../x", "-p", "--all", ":(exclude)apps", "apps\\a"]
     )

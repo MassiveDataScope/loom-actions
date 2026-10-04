@@ -55,7 +55,9 @@ class ReleaseScope:
     Attributes:
         tag_prefix: Prefix of its release tags, before the version; see
             :func:`release_tags.check_tag_prefix`.
-        paths:      Paths whose commits it ships; none ships every commit.
+        paths:      Paths whose commits it ships; none ships every commit. Each
+            is normalised (``./apps/a/`` is ``apps/a``) and kept once, in the
+            order given.
 
     Raises:
         ReleaseScopeError: When the prefix or a path is not allowed.
@@ -71,20 +73,21 @@ class ReleaseScope:
             raise ReleaseScopeError(str(error)) from error
         for path in self.paths:
             _check_path(path)
+        normalised = (str(PurePosixPath(path)) for path in self.paths)
+        # Frozen: the normalised paths replace the given ones once, here.
+        object.__setattr__(self, "paths", tuple(dict.fromkeys(normalised)))
 
     @classmethod
     def parse(cls, tag_prefix: str, paths: str) -> ReleaseScope:
         """Return the scope of *tag_prefix* and *paths*, separated by newlines or commas.
 
-        Blank entries are skipped, and each path is normalised (``./apps/a/`` is
-        ``apps/a``) and kept once, in the order given.
+        Blank entries are skipped.
 
         Raises:
             ReleaseScopeError: When the prefix or a path is not allowed.
         """
         entries = (entry.strip() for entry in _SEPARATORS.split(paths))
-        normalised = (str(PurePosixPath(entry)) for entry in entries if entry)
-        return cls(tag_prefix, tuple(dict.fromkeys(normalised)))
+        return cls(tag_prefix, tuple(entry for entry in entries if entry))
 
     @property
     def log_limits(self) -> tuple[str, ...]:
