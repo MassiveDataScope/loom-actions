@@ -383,6 +383,11 @@ jobs:
           body-file: release-preview.md
 ```
 
+The comment's header names the test merge it was computed from and its base, by short sha.
+GitHub recomputes that merge lazily and a push to the base branch alone runs no
+`pull_request` workflow, so a preview can trail the base; the shas make that visible, and the
+next run on the pull request (a push, a title edit, or closing and reopening it) catches up.
+
 The `failed` output is `true` when the release would fail, for a caller that wants the check
 to fail too; the preview step itself succeeds so the comment is posted. A pull request with
 merge conflicts has no test merge, and its checkout fails until they are resolved.

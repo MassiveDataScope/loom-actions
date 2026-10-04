@@ -55,7 +55,7 @@ from release_scope import (
     scope_of,
 )
 
-HEADER: Final[str] = (
+_HEADER: Final[str] = (
     "## Release preview\n"
     "\n"
     "> [!NOTE]\n"
@@ -64,6 +64,9 @@ HEADER: Final[str] = (
     "> and the section added to its changelog, which is also the GitHub Release body.\n"
     "> The pull request is read as merged under the title it has now, so editing the\n"
     "> title updates the preview.\n"
+    ">\n"
+    "> Computed from the test merge `{merge}` (base `{base}`): a base branch that moved\n"
+    "> since then is not in it until the next run on this pull request.\n"
     "\n"
 )
 _BACKTICKS: Final[re.Pattern[str]] = re.compile(r"`+")
@@ -272,10 +275,19 @@ def preview_release(
         return ReleasePreview(scope.tag_prefix, error=f"changelog failed: {error}")
 
 
-def append_preview(output: Path, text: str) -> None:
-    """Append *text* to *output*, starting a new file with :data:`HEADER`."""
+def preview_header(merge_sha: str, base_sha: str) -> str:
+    """Return the header of the comment, naming the test merge and its base by short sha.
+
+    GitHub recomputes the test merge lazily, so a run can preview a base that
+    has moved since; the shas make such a stale preview visible.
+    """
+    return _HEADER.format(merge=merge_sha[:7], base=base_sha[:7])
+
+
+def append_preview(output: Path, text: str, header: str) -> None:
+    """Append *text* to *output*, starting a new file with *header*."""
     existing = output.read_text(encoding="utf-8") if output.is_file() else ""
-    separator = "\n" if existing else HEADER
+    separator = "\n" if existing else header
     output.write_text(f"{existing}{separator}{text}", encoding="utf-8")
 
 
@@ -323,9 +335,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
             repository_url=f"{options.server_url.rstrip('/')}/{options.slug}",
             date=options.date,
         )
+        base_sha = commit_parents(options.repository, options.merge_sha)[0]
     except (ReleaseScopeError, PreviewError, HistoryError) as error:
         _fail(str(error))
-    append_preview(options.output, preview.render(options.changelog_file))
+    header = preview_header(options.merge_sha, base_sha)
+    append_preview(options.output, preview.render(options.changelog_file), header)
     print(f"version={preview.version}")
     print(f"failed={'true' if preview.error else 'false'}")
     return 0

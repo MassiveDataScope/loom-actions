@@ -23,11 +23,11 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "actions" / "release" / "plan
 from changelog_file import build_changelog  # noqa: E402
 from plan_release import plan_release  # noqa: E402
 from preview_changelog import (  # noqa: E402
-    HEADER,
     OpenPullRequest,
     PreviewError,
     ReleasePreview,
     main,
+    preview_header,
     preview_release,
     pull_request_commits,
 )
@@ -287,6 +287,13 @@ class TestThePreviewIsTheRelease:
 
 
 class TestRender:
+    def test_the_header_names_the_test_merge_and_its_base(self) -> None:
+        header = preview_header("3ee9a91" + "0" * 33, "4771e69" + "1" * 33)
+
+        assert header.startswith("## Release preview\n\n> [!NOTE]\n")
+        assert "> Computed from the test merge `3ee9a91` (base `4771e69`)" in header
+        assert header.endswith("\n\n")
+
     def test_a_release_shows_its_version_and_the_section_verbatim(self) -> None:
         notes = f"## [0.2.0] - {TODAY}\n\n### Added\n\n- greet\n"
         preview = ReleasePreview("app-a/v", "0.2.0", "minor", "app-a/v0.1.0", notes)
@@ -359,8 +366,9 @@ class TestMain:
         assert self._main(repository, merge, output, *app_b) == 0
 
         text = output.read_text("utf-8")
-        assert text.startswith(HEADER)
-        assert text.count(HEADER) == 1
+        header = preview_header(merge, _git(repository, "rev-parse", f"{merge}^1"))
+        assert text.startswith(header)
+        assert text.count("## Release preview") == 1
         assert "### `app-a/v`: `app-a/v0.2.0` (minor)" in text
         assert "### `app-b/v`: no release" in text
         assert capsys.readouterr().out.splitlines() == [
