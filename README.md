@@ -23,7 +23,8 @@ Reusable GitHub Actions for Python projects using Trunk-Based Development and Co
 | Core | `actions/core/pr-comment-update` | Create/update PR comment identified by hidden tags | ✅ Ready |
 | Core | `actions/core/setup-uv` | Setup Python + uv toolchain | ✅ Ready |
 | Release | `actions/release/versioning-branch-semantic` | Calculate semantic version based on branch rules | ✅ Ready |
-| Release | `actions/release/changelog-conventional-commit` | Build changelog markdown from Conventional Commits | ✅ Ready |
+| Release | `actions/release/changelog-conventional-commit` | Build changelog markdown from Conventional Commits (its own Jinja format, not the `changelog: true` one) | ✅ Ready |
+| Release | `actions/release/plan-release/preview` | Preview on a pull request the version and changelog section a `changelog: true` release would write | ✅ Ready |
 | Python | `actions/python/quality-report` | Aggregated quality/security report and fail gates | ✅ Ready |
 
 ## Reusable Workflows
@@ -327,6 +328,64 @@ the contents API as `docs(release): changelog for <prefix>X.Y.Z`.
 - The entries come from the same commits as the version: every commit since the last
   `<prefix>` tag, or, with `scope-to-package`, only those touching `package-dir` or one of
   the `shared-paths`.
+
+#### Previewing the release on a pull request
+
+`actions/release/plan-release/preview` shows on an open pull request what merging it with the
+release label would release, using the release's own planner and changelog writer, so the
+preview cannot drift from the release: the version, from the last `<prefix>` tag, the branch
+classes and the declared breaks, the title's `!` included, and the exact section the release
+adds to `<package-dir>/CHANGELOG.md`, which is also the GitHub Release body. The entries are
+the pull requests merged since the last tag and not released yet, and this one under the title
+it has now, scoped to the package's paths. A package nothing touches shows "no release", and a
+title that is not a Conventional Commits header shows the error the release would stop on.
+The section is dated today in UTC, marked provisional: the release dates it by its merge
+commit.
+
+It matches `changelog: true`. `actions/release/changelog-conventional-commit` is unchanged
+for its callers, but it renders its own format, listing commits, not what the release writes.
+
+It runs on the test merge a `pull_request` event checks out, so the job checks out the
+default ref with `fetch-depth: 0`, and needs `contents: read` and `pull-requests: read`; only
+the comment step needs `pull-requests: write`. Each run appends one package to the output
+file, so a monorepo previews each package and posts one comment. Pass each package the
+`tag-prefix`, `semantic-branch-config` and paths its release uses (`package-dir` plus
+`shared-paths` with `scope-to-package`, nothing without it):
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited] # edited: a new title, a new preview
+
+jobs:
+  release-preview:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write # the comment; the preview itself only reads
+    steps:
+      - uses: actions/checkout@<sha> # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: MassiveDataScope/loom-actions/actions/release/plan-release/preview@<sha> # vX.Y.Z
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          tag-prefix: control-plane/v
+          paths: apps/control-plane,uv.lock
+          semantic-branch-config: apps/control-plane/pyproject.toml
+          changelog-file: apps/control-plane/CHANGELOG.md
+      # ...one more step per package, same output file...
+      - uses: MassiveDataScope/loom-actions/actions/core/pr-comment-update@<sha> # vX.Y.Z
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          tags: "<!-- release-preview -->"
+          body-file: release-preview.md
+```
+
+The `failed` output is `true` when the release would fail, for a caller that wants the check
+to fail too; the preview step itself succeeds so the comment is posted. A pull request with
+merge conflicts has no test merge, and its checkout fails until they are resolved.
 
 ### Monorepo callers
 
