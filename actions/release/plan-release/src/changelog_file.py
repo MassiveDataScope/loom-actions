@@ -316,13 +316,25 @@ class ChangelogDocument:
 
     def notes(self, version: str) -> str | None:
         """Return the section of *version*, with its link reference, or None if unlisted."""
+        section = self.section(version)
+        if section is None:
+            return None
+        link = self._reference(f"[{version}]:")
+        return f"{section}\n{link}\n" if link else section
+
+    def section(self, version: str) -> str | None:
+        """Return the ``## [version]`` section, without its link, or None if unlisted."""
         heading = f"## [{version}]"
         start = next((i for i, line in enumerate(self.body) if line.startswith(heading)), None)
         if start is None:
             return None
-        section = "\n".join(self.body[start : self._section_end(start)]).strip("\n") + "\n"
-        link = next((ref for ref in self.references if ref.startswith(f"[{version}]:")), None)
-        return f"{section}\n{link}\n" if link else section
+        return "\n".join(self.body[start : self._section_end(start)]).strip("\n") + "\n"
+
+    def release_links(self, version: str) -> tuple[str, str] | None:
+        """Return the ``[unreleased]`` and ``[version]`` references, or None if one is missing."""
+        unreleased = self._reference("[unreleased]:")
+        link = self._reference(f"[{version}]:")
+        return (unreleased, link) if unreleased and link else None
 
     def with_release(self, section: str, links: Sequence[str]) -> ChangelogDocument:
         """Return the document with *section* right under ``## [Unreleased]``.
@@ -349,6 +361,9 @@ class ChangelogDocument:
     def render(self) -> str:
         """Return the file: the body, a blank line, then the link references."""
         return "\n".join(self.body) + "\n\n" + "\n".join(self.references) + "\n"
+
+    def _reference(self, label: str) -> str | None:
+        return next((ref for ref in self.references if ref.lower().startswith(label.lower())), None)
 
     def _section_end(self, start: int) -> int:
         return next(
@@ -394,6 +409,26 @@ def update_changelog(
     updated = document.with_release(section, links)
     notes = section.rstrip("\n") + f"\n\n{links[1]}\n"
     return ChangelogUpdate(updated.render(), notes, changed=True)
+
+
+def carry_release(built: str, onto: str, version: str) -> ChangelogUpdate:
+    """Return *onto* with the release of *version* that the changelog *built* lists.
+
+    A release builds its changelog on the head of the base branch, then commits
+    it once the release exists; the branch may have moved in between. This puts
+    the same section and links on top of what the branch holds by then, through
+    :func:`update_changelog`, so a version *onto* already lists is left alone.
+
+    Raises:
+        ChangelogError: When *built* does not list *version* with its links, or
+            *onto* does not keep a changelog.
+    """
+    document = ChangelogDocument.parse(built)
+    section = document.section(version)
+    links = document.release_links(version)
+    if section is None or links is None:
+        raise ChangelogError(f"the built changelog does not list {version} with its links")
+    return update_changelog(onto, version, section, links)
 
 
 def release_date(repository: Path, sha: str) -> str:

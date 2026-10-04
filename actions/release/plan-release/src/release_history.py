@@ -43,16 +43,17 @@ class PullRequest:
 CommitPullRequests = Callable[[str], tuple[PullRequest, ...]]
 
 
-def run(command: Sequence[str]) -> str:
-    """Return the standard output of *command*, with literal git pathspecs.
+def run(command: Sequence[str], stdin: str | None = None) -> str:
+    """Return the standard output of *command*, given *stdin*, with literal git pathspecs.
 
     Raises:
-        HistoryError: When the command cannot start or exits with an error.
+        HistoryError: When the command cannot start or exits with an error; the
+            message holds its standard error.
     """
     environment = {**os.environ, "GIT_LITERAL_PATHSPECS": "1"}
     try:
         completed = subprocess.run(
-            command, check=True, capture_output=True, text=True, env=environment
+            command, input=stdin, check=True, capture_output=True, text=True, env=environment
         )
     except (OSError, subprocess.CalledProcessError) as error:
         detail = getattr(error, "stderr", "") or str(error)

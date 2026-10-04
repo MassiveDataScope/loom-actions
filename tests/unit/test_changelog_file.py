@@ -31,6 +31,7 @@ from changelog_file import (  # noqa: E402
     ChangelogError,
     Entry,
     build_changelog,
+    carry_release,
     check_changelog_file,
     classify,
     main,
@@ -349,6 +350,44 @@ class TestUpdateChangelog:
     def test_a_file_that_does_not_keep_a_changelog_is_refused(self) -> None:
         with pytest.raises(ChangelogError, match=r"no '## \[Unreleased\]' heading"):
             update_changelog("# 🚀 Release 1.0.0\n\n- feat: one\n", "1.1.0", SECTION_020, ())
+
+
+class TestCarryRelease:
+    """The release a plan built, carried onto the file the base branch holds by commit time."""
+
+    BUILT = update_changelog(EXISTING, "0.2.0", SECTION_020, LINKS_020).text
+
+    def test_onto_the_file_it_was_built_on_it_is_the_built_file(self) -> None:
+        update = carry_release(self.BUILT, EXISTING, "0.2.0")
+
+        assert (update.text, update.changed) == (self.BUILT, True)
+
+    def test_a_change_made_on_the_branch_since_is_kept(self) -> None:
+        moved = EXISTING.replace("## [Unreleased]\n", "## [Unreleased]\n\n- planned by hand\n")
+
+        update = carry_release(self.BUILT, moved, "0.2.0")
+
+        assert update.changed is True
+        assert "## [Unreleased]\n\n- planned by hand\n\n## [0.2.0] - 2026-10-05\n" in update.text
+        assert update.text.endswith(
+            f"[unreleased]: {URL}/compare/v0.2.0...HEAD\n"
+            f"[0.2.0]: {URL}/compare/v0.1.0...v0.2.0\n"
+            f"[0.1.0]: {URL}/releases/tag/v0.1.0\n"
+        )
+
+    def test_a_branch_that_already_lists_the_version_is_left_alone(self) -> None:
+        update = carry_release(self.BUILT, self.BUILT, "0.2.0")
+
+        assert (update.text, update.changed) == (self.BUILT, False)
+
+    def test_a_missing_file_gets_the_header_and_the_release(self) -> None:
+        update = carry_release(self.BUILT, "", "0.2.0")
+
+        assert update.text.startswith(INTRO + "\n## [Unreleased]\n\n## [0.2.0] - 2026-10-05\n")
+
+    def test_a_built_file_without_the_release_is_refused(self) -> None:
+        with pytest.raises(ChangelogError, match="does not list 0.3.0"):
+            carry_release(self.BUILT, EXISTING, "0.3.0")
 
 
 class TestChangelogDocument:
