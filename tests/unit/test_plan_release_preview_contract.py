@@ -161,19 +161,13 @@ class TestTheStep:
         assert "- **api:** add one ([#4](https://github.com/acme/repo/pull/4))" in preview
 
 
-# The plan-release release-on-label runs: v1.13.0, the release that ships the
-# preview. The preview matches the release when both run the same plan-release
-# source, so any src/ file that differs from this pin must be listed below.
-RELEASED_PLANNER = "8a9655b82b19ddf147a1b50e53dcd5638b23f884"
-# src/ files that differ from the pinned planner. Neither changes the version or
-# the section a release computes:
-# - plan_release.py raises IgnoredBranchesOnly, a ReleasePlanError, where it raised
-#   ReleasePlanError with the same message, so the release stops as before with
-#   the same exit code and stderr;
-# - preview_changelog.py shows that refusal as no release when the pull request's
-#   own branch class ships no version.
-# A follow-up moves release-on-label's pin to the release that ships them.
-DIVERGED_SINCE_PIN: set[str] = {"plan_release.py", "preview_changelog.py"}
+# The plan-release release-on-label runs: v1.13.2. The preview matches the
+# release when both run the same plan-release source, so any src/ file that
+# differs from this pin must be listed below.
+RELEASED_PLANNER = "293c2d786d2891663e9d79c8f25b65b7671e538b"
+# src/ files that differ from the pinned planner. None changes behaviour:
+# - preview_changelog.py: its module docstring no longer names a pinned version.
+DIVERGED_SINCE_PIN: set[str] = {"preview_changelog.py"}
 
 
 class TestThePlannerTheReleaseRuns:
