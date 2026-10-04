@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "actions" / "release" / "plan
 from changelog_file import (  # noqa: E402
     INTRO,
     Change,
+    ChangelogDocument,
     ChangelogError,
     Entry,
     build_changelog,
@@ -317,6 +318,29 @@ class TestUpdateChangelog:
     def test_a_file_that_does_not_keep_a_changelog_is_refused(self) -> None:
         with pytest.raises(ChangelogError, match=r"no '## \[Unreleased\]' heading"):
             update_changelog("# 🚀 Release 1.0.0\n\n- feat: one\n", "1.1.0", SECTION_020, ())
+
+
+class TestChangelogDocument:
+    def test_the_references_at_the_bottom_are_parsed_apart_from_the_body(self) -> None:
+        document = ChangelogDocument.parse(EXISTING)
+
+        assert document.body[-1] == "- repair it"
+        assert document.references == (
+            f"[unreleased]: {URL}/compare/v0.1.0...HEAD",
+            f"[0.1.0]: {URL}/releases/tag/v0.1.0",
+        )
+
+    def test_an_empty_file_is_the_standard_header_and_an_unreleased_section(self) -> None:
+        document = ChangelogDocument.parse("")
+
+        assert document.render() == INTRO + "\n## [Unreleased]\n\n\n"
+        assert document.notes("0.1.0") is None
+
+    def test_the_notes_of_a_listed_version_carry_its_link(self) -> None:
+        assert ChangelogDocument.parse(EXISTING).notes("0.1.0") == (
+            f"## [0.1.0] - 2026-10-04\n\n### Fixed\n\n- repair it\n\n"
+            f"[0.1.0]: {URL}/releases/tag/v0.1.0\n"
+        )
 
 
 class TestCheckChangelogFile:

@@ -94,6 +94,7 @@ INTRO: Final[str] = (
     "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),\n"
     "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n"
 )
+_NEW_FILE: Final[str] = f"{INTRO}\n## [Unreleased]\n"
 _NO_CHANGES: Final[str] = "No user-facing changes."
 _HEADER: Final[re.Pattern[str]] = re.compile(
     r"^(?P<type>[A-Za-z]+)(?:\((?P<scope>[^()\s][^()]*)\))?(?P<bang>!)?: (?P<description>\S.*)$"
@@ -254,31 +255,78 @@ def release_links(
     return (f"[unreleased]: {repository_url}/compare/{tag}...HEAD", f"[{version}]: {target}")
 
 
-def _split_references(text: str) -> tuple[list[str], list[str]]:
-    lines = text.rstrip("\n").splitlines()
-    end = len(lines)
-    while end and (not lines[end - 1].strip() or _REFERENCE.match(lines[end - 1])):
-        end -= 1
-    return lines[:end], [line for line in lines[end:] if line.strip()]
+@dataclass(frozen=True, slots=True)
+class ChangelogDocument:
+    """A Keep a Changelog file: its body, and the link references that close it.
+
+    Only the parts a release reads or writes are modelled: the ``## `` headings
+    that open each version, and the references at the bottom. Everything else,
+    hand-written notes under ``## [Unreleased]`` included, is kept line for line.
+    """
+
+    body: tuple[str, ...]
+    references: tuple[str, ...]
+
+    @classmethod
+    def parse(cls, text: str) -> ChangelogDocument:
+        """Return the document *text* holds; empty *text* is a new file's header."""
+        lines = (text or _NEW_FILE).rstrip("\n").splitlines()
+        end = len(lines)
+        while end and (not lines[end - 1].strip() or _REFERENCE.match(lines[end - 1])):
+            end -= 1
+        return cls(tuple(lines[:end]), tuple(line for line in lines[end:] if line.strip()))
+
+    def notes(self, version: str) -> str | None:
+        """Return the section of *version*, with its link reference, or None if unlisted."""
+        heading = f"## [{version}]"
+        start = next((i for i, line in enumerate(self.body) if line.startswith(heading)), None)
+        if start is None:
+            return None
+        section = "\n".join(self.body[start : self._section_end(start)]).strip("\n") + "\n"
+        link = next((ref for ref in self.references if ref.startswith(f"[{version}]:")), None)
+        return f"{section}\n{link}\n" if link else section
+
+    def with_release(self, section: str, links: Sequence[str]) -> ChangelogDocument:
+        """Return the document with *section* right under ``## [Unreleased]``.
+
+        *links* holds the ``[unreleased]`` reference first and the version's
+        next; they replace the old ``[unreleased]`` reference on top of the rest.
+
+        Raises:
+            ChangelogError: When the document has no ``## [Unreleased]`` heading.
+        """
+        start = next((i for i, line in enumerate(self.body) if _UNRELEASED.match(line)), None)
+        if start is None:
+            raise ChangelogError(
+                "the changelog has no '## [Unreleased]' heading, so it does not follow "
+                "Keep a Changelog 1.1.0: add one under the intro, or start from an empty file"
+            )
+        end = self._section_end(start)
+        head = _strip_blank(self.body[:end], leading=False)
+        tail = _strip_blank(self.body[end:], leading=True)
+        body = (*head, "", *section.rstrip("\n").split("\n"), *(("", *tail) if tail else ()))
+        kept = tuple(ref for ref in self.references if not ref.lower().startswith("[unreleased]:"))
+        return ChangelogDocument(body, (*links, *kept))
+
+    def render(self) -> str:
+        """Return the file: the body, a blank line, then the link references."""
+        return "\n".join(self.body) + "\n\n" + "\n".join(self.references) + "\n"
+
+    def _section_end(self, start: int) -> int:
+        return next(
+            (i for i in range(start + 1, len(self.body)) if self.body[i].startswith("## ")),
+            len(self.body),
+        )
 
 
-def _section_end(lines: Sequence[str], start: int) -> int:
-    return next(
-        (index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")),
-        len(lines),
-    )
-
-
-def existing_notes(text: str, version: str) -> str | None:
-    """Return the section of *version* already in *text*, with its link, or None."""
-    lines, references = _split_references(text)
-    heading = f"## [{version}]"
-    start = next((i for i, line in enumerate(lines) if line.startswith(heading)), None)
-    if start is None:
-        return None
-    section = "\n".join(lines[start : _section_end(lines, start)]).strip("\n") + "\n"
-    link = next((ref for ref in references if ref.startswith(f"[{version}]:")), None)
-    return f"{section}\n{link}\n" if link else section
+def _strip_blank(lines: Sequence[str], *, leading: bool) -> tuple[str, ...]:
+    """Return *lines* without the empty lines at their end, and at their start if *leading*."""
+    first, last = 0, len(lines)
+    while last > first and not lines[last - 1]:
+        last -= 1
+    while leading and first < last and not lines[first]:
+        first += 1
+    return tuple(lines[first:last])
 
 
 def update_changelog(
@@ -293,23 +341,12 @@ def update_changelog(
     Raises:
         ChangelogError: When *text* has no ``## [Unreleased]`` heading.
     """
-    found = existing_notes(text, version)
-    if found is not None:
+    document = ChangelogDocument.parse(text)
+    if (found := document.notes(version)) is not None:
         return text, found
-    lines, references = _split_references(text or f"{INTRO}\n## [Unreleased]\n")
-    start = next((i for i, line in enumerate(lines) if _UNRELEASED.match(line)), None)
-    if start is None:
-        raise ChangelogError(
-            "the changelog has no '## [Unreleased]' heading, so it does not follow "
-            "Keep a Changelog 1.1.0: add one under the intro, or start from an empty file"
-        )
-    end = _section_end(lines, start)
-    head = "\n".join(lines[:end]).rstrip("\n")
-    tail = "\n".join(lines[end:]).strip("\n")
-    body = "\n\n".join(part for part in (head, section.rstrip("\n"), tail) if part)
-    kept = [ref for ref in references if not ref.lower().startswith("[unreleased]:")]
-    updated = body + "\n\n" + "\n".join([*links, *kept]) + "\n"
-    return updated, section.rstrip("\n") + f"\n\n{links[1]}\n"
+    return document.with_release(section, links).render(), (
+        section.rstrip("\n") + f"\n\n{links[1]}\n"
+    )
 
 
 def release_date(repository: Path, sha: str) -> str:
@@ -338,7 +375,7 @@ def build_changelog(
     try:
         check_tag_prefix(tag_prefix)
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
-        if (found := existing_notes(text, version)) is not None:
+        if (found := ChangelogDocument.parse(text).notes(version)) is not None:
             return text, found
         last_tag = latest_release_tag(repository, merge_sha, tag_prefix)
         changes = shipped_changes(repository, last_tag, merge_sha, pull_requests, repository_url)
