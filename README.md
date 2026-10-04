@@ -233,9 +233,8 @@ jobs:
 
 - The planner (`actions/release/plan-release`) and its `commit-changelog` composite are
   pinned by the commit of a release, so a caller's SHA pin on this workflow also fixes the
-  planner it runs. Until v1.11.0 is released, both pins in this tree hold a placeholder,
-  `33412af`, which must be replaced with the commit of the v1.11.0 release: that commit is
-  the first to hold the `paths` input and the composite this workflow uses.
+  planner it runs. Both pins point at the v1.11.0 release, the first to hold the `paths`
+  input and the `commit-changelog` composite this workflow uses.
 - The workflow passes `tag-prefix` (`v` by default) to the planner it pins (v1.11.0), which
   reads only the tags `<prefix>X.Y.Z` to find the last release and write the notes, so a
   monorepo package released as `control-plane/v0.1.0` never plans from another package's

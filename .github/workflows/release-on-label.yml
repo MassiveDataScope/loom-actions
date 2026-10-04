@@ -243,13 +243,11 @@ jobs:
       # Pinned by the commit of a release, not by the floating major tag: a
       # reusable workflow cannot use a path-relative action, and the caller's SHA
       # pin would otherwise mean nothing while this reference moved with every
-      # release. The composite at this commit is the one in this tree.
-      # PLACEHOLDER: 33412af is not that commit yet. Replace this pin and the
-      # commit-changelog pin below with the commit of the v1.11.0 release, which
-      # holds the planner this tree passes paths to, before this workflow ships.
+      # release. v1.11.0 is the first release whose planner takes the paths and
+      # changelog inputs and ships the commit-changelog composite pinned below.
       - name: Plan the release
         id: plan
-        uses: MassiveDataScope/loom-actions/actions/release/plan-release@33412af61b9cb01f90e58a6dd88beaf4f8216447 # v1.11.0
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release@aa40fd0bd251822a2907475a0a8140495f6cb98e # v1.11.0
         with:
           merge-sha: ${{ env.MERGE_SHA }}
           repository-slug: ${{ github.repository }}
@@ -471,7 +469,7 @@ jobs:
         id: commit-changelog
         if: ${{ inputs.changelog && steps.download-changelog.outcome == 'success' }}
         continue-on-error: true
-        uses: MassiveDataScope/loom-actions/actions/release/plan-release/commit-changelog@33412af61b9cb01f90e58a6dd88beaf4f8216447 # v1.11.0
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release/commit-changelog@aa40fd0bd251822a2907475a0a8140495f6cb98e # v1.11.0
         with:
           changelog-file: ${{ needs.plan.outputs.changelog_file }}
           built-file: changelog/CHANGELOG.md
