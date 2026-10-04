@@ -132,6 +132,7 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       release_sha: ${{ env.MERGE_SHA }}
       changelog_file: ${{ env.CHANGELOG_FILE }}
+      artifact_suffix: ${{ steps.artifacts.outputs.suffix }}
     env:
       MERGE_SHA: ${{ inputs.merge-sha != '' && inputs.merge-sha || github.event.pull_request.merge_commit_sha }}
       # Empty unless the caller keeps a changelog; the planner then touches no file.
@@ -156,6 +157,18 @@ jobs:
               exit 1
               ;;
           esac
+
+      # A caller releasing two packages in one run gets one set of artifacts
+      # each; an artifact name may not hold "/", the only such character a
+      # checked prefix can.
+      - name: Name the artifacts of the release
+        id: artifacts
+        shell: bash
+        env:
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        run: |
+          set -euo pipefail
+          echo "suffix=${TAG_PREFIX//\//-}" >> "$GITHUB_OUTPUT"
 
       # It names the working directory of the build and the changelog file:
       # apps/api/ or apps//api would name apps/api//CHANGELOG.md.
@@ -252,7 +265,7 @@ jobs:
         if: ${{ steps.plan.outputs.version != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-notes
+          name: release-notes-${{ steps.artifacts.outputs.suffix }}
           path: CHANGELOG_RELEASE.md
           if-no-files-found: error
           retention-days: 1
@@ -263,7 +276,7 @@ jobs:
         if: ${{ inputs.changelog && steps.plan.outputs.version != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: changelog
+          name: changelog-${{ steps.artifacts.outputs.suffix }}
           path: ${{ env.CHANGELOG_FILE }}
           if-no-files-found: error
           retention-days: 1
@@ -402,7 +415,7 @@ jobs:
       - name: Download release notes
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-notes
+          name: release-notes-${{ needs.plan.outputs.artifact_suffix }}
 
       - name: Update floating major tag
         env:
@@ -446,7 +459,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: changelog
+          name: changelog-${{ needs.plan.outputs.artifact_suffix }}
           path: changelog
 
       # Through the contents API, so the commit needs no checkout and no

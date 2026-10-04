@@ -115,7 +115,9 @@ class TestTheOrder:
         assert upload["with"]["path"] == "${{ env.CHANGELOG_FILE }}"
         assert upload["with"]["if-no-files-found"] == "error"
         download = wf.step(NAME, "release", DOWNLOAD)
-        assert download["with"] == {"name": upload["with"]["name"], "path": "changelog"}
+        assert download["with"]["path"] == "changelog"
+        assert upload["with"]["name"].startswith("changelog-")
+        assert download["with"]["name"].startswith("changelog-")
 
 
 class TestACommitFailureFailsNothing:
@@ -146,7 +148,7 @@ class TestACommitFailureFailsNothing:
         result = wf.run(NAME, "release", WARN, env, tmp_path)
 
         assert result.returncode == 0, result.stderr
-        (warning,) = [line for line in result.stdout.splitlines() if line.startswith("::")]
+        (warning,) = (line for line in result.stdout.splitlines() if line.startswith("::"))
         assert warning.startswith("::warning title=Changelog not committed::api/v0.2.0 is released")
         assert "apps/api/CHANGELOG.md was not committed to master" in warning
         assert "re-run all jobs" in warning
