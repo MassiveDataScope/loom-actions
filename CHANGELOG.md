@@ -1,3 +1,155 @@
+# 🚀 Release 1.13.0 ([#71](https://github.com/MassiveDataScope/loom-actions/pull/71)) ([`18483ac`](https://github.com/MassiveDataScope/loom-actions/commit/18483ac9fee7d89e0eae0fb3e0dfd65f1347faa8))
+
+
+## ✨ Features
+### plan-release
+- **plan-release:** read the parents of a commit<br>
+  > commit_parents returns the parents of a revision in order, two for a
+  > merge and none for a root commit, so a preview can tell the test merge
+  > GitHub checks out for a pull request from a plain commit, and read the
+  > commits its second parent brings in.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** let the changelog take the date of its section<br>
+  > build_changelog takes an optional date, YYYY-MM-DD, for the section it
+  > writes. A preview has no merge commit to date the section by yet; left
+  > out, the section is dated by the merge commit in UTC as before.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** preview the release a pull request would ship<br>
+  > preview_changelog runs the planner and the Keep a Changelog writer on
+  > the test merge GitHub checks out for a pull_request event, reading the
+  > commits its second parent brings in as the pull request, merged, under
+  > the title it has now. Every other commit is read from GitHub as the
+  > release reads it, so the preview shows the version a labelled merge
+  > would release, from the last <prefix> tag, the branch classes and the
+  > declared breaks, and the very section it would add to the changelog:
+  > the pull requests merged since the last tag and not released yet, and
+  > this one, scoped to the package's paths. A package no commit touches
+  > shows no release, and a title that is not a Conventional Commits
+  > header shows the error the release would stop on, word for word.
+  > One run previews one package and appends it to a Markdown file under
+  > a single header, so a monorepo runs it once per package and posts one
+  > comment. The section is dated today in UTC, which the comment calls
+  > provisional, as the release dates it by its merge commit.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** add the preview composite for pull requests<br>
+  > actions/release/plan-release/preview runs preview_changelog on the test
+  > merge of a pull_request event, taking the pull request's number, title
+  > and branch from the event by default, and appends one package to a
+  > Markdown file for core/pr-comment-update. Every input reaches the
+  > script through env only. It needs contents: read and pull-requests:
+  > read; only the caller's comment step needs pull-requests: write.
+  > Its outputs are the file, the version a labelled merge would release
+  > and whether the release would fail, so a caller may fail its check on
+  > a title the release would refuse.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** name the test merge in the preview header<br>
+  > The comment's header now names the test merge the preview was computed
+  > from and its base, by short sha. GitHub recomputes refs/pull/N/merge
+  > lazily and a push to the base branch alone runs no pull_request
+  > workflow, so a preview can trail the base; the shas make that visible.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### plan-release
+- **plan-release:** word the preview's date and no-release lines plainly<br>
+  > The no-release line no longer reads "release nothing: nothing to
+  > release", and the date note is a sentence of its own.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** harden the preview after review<br>
+  > An unreadable history while writing the section is a failure to
+  > preview, not a release error: a ChangelogError caused by a
+  > HistoryError is raised and fails the step, as one while planning did.
+  > main memoizes the GitHub reader, so the plan and the changelog read
+  > each commit's pull requests once.
+  > main refuses a merge sha that is not a full commit sha, the rule
+  > release-on-label checks its release commit against.
+  > PullRequestMerge reads the test merge's parents and commits once;
+  > the preview carries its base for the header and tells whether this
+  > pull request is in the release from the plan's shipped commits.
+  > as_merged is renamed with_pull_request_merged; ReleasePreview is
+  > built through released, nothing and failed.
+  > A pull request outside an unscoped release "brings no commit"
+  > instead of "changes none of its paths".
+  > The docstring states the preview matches the release when both run
+  > the same plan-release source, and where squash merges diverge.
+  > New tests cover a branch that merged its base, a bang on one of its
+  > commits, a first release, a version already listed, a stale title from
+  > GitHub, an unscoped release, a rebase merge matching the preview and
+  > a squash merge pinning the documented divergence.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** pass the merge sha attached and record the planner pin<br>
+  > The preview composite passes --merge-sha= attached, like the title and
+  > the branch, and says which plan-release source it matches, where squash
+  > merges diverge and that its output file starts afresh after checkout.
+  > The contract test records the planner release-on-label pins (v1.11.0,
+  > aa40fd0) and the src/ files that differ from it, so a pin move or a new
+  > divergence is looked at; the follow-up moving the pin to the release
+  > that ships the preview updates both.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+## 📖 Documentation
+### readme
+- **readme:** document the release preview on pull requests<br>
+  > Explain what plan-release/preview shows, why it matches changelog: true
+  > while changelog-conventional-commit keeps its own format for its
+  > callers, the permissions it needs, and a monorepo caller previewing
+  > each package in one comment.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **readme:** state what the release preview matches and where it may lag<br>
+  > Replace "cannot drift" with the precise condition: the preview matches
+  > the release when both run the same plan-release source, today the
+  > v1.11.0 planner release-on-label pins, until a follow-up moves it.
+  > Document the squash-merge divergence, what refreshes a preview, the
+  > output file, fork pull requests' read-only token, and add concurrency
+  > and a timeout to the example.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+### changelog-conventional-commit
+- **changelog-conventional-commit:** mark the action deprecated<br>
+  > It renders its own Jinja format, listing commits, not the changelog a
+  > release with changelog: true writes. It stays, unchanged, for its
+  > existing callers; new callers preview the release with
+  > plan-release/preview and keep the changelog with changelog: true. Only
+  > the README and the action's description change, not its behaviour.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+## ♻️ Refactor
+### plan-release
+- **plan-release:** declare the release scripts' common arguments once<br>
+  > add_release_arguments (--repository, --merge-sha, --slug),
+  > add_server_url_argument and repository_url live next to
+  > add_scope_arguments in release_scope, and plan_release, changelog_file
+  > and preview_changelog use them instead of three copies. The --help of
+  > plan_release.py and changelog_file.py is byte-identical before and
+  > after; the existing CLI tests pass unchanged.
+  > The contract test lists plan_release.py and release_scope.py among the
+  > files that differ from the pinned planner, as argument parsing only.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
 # 🚀 Release 1.12.0 ([#69](https://github.com/MassiveDataScope/loom-actions/pull/69)) ([`d2b0098`](https://github.com/MassiveDataScope/loom-actions/commit/d2b00989d13ea4cb9297008ba3e24b915288dd9d))
 
 
