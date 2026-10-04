@@ -27,6 +27,7 @@ from release_scope import (
     DEFAULT_SCOPE,
     ReleaseScope,
     ReleaseScopeError,
+    add_release_arguments,
     add_scope_arguments,
     scope_of,
 )
@@ -270,9 +271,7 @@ def plan_release(
 
 def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plan the release a labelled merge ships.")
-    parser.add_argument("--repository", type=Path, default=Path.cwd())
-    parser.add_argument("--merge-sha", required=True)
-    parser.add_argument("--slug", required=True, help="owner/repo the pull requests live in")
+    add_release_arguments(parser)
     parser.add_argument(
         "--semantic-branch-config",
         default=str(_DEFAULT_CONFIG),

@@ -1,0 +1,116 @@
+name: "Preview the release"
+description: "Show on a pull request the version and changelog section a labelled merge would release"
+
+# Runs the release's own planner and Keep a Changelog writer (plan-release's
+# src/) on the test merge a pull_request event checks out, reading the pull
+# request as merged under the title it has now. So it shows the release a caller
+# of release-on-label with changelog: true would publish, or the error it would
+# stop on, for one package, provided both run the same plan-release source:
+# pin this action to the release release-on-label pins its planner at (see the
+# README). It is exact for merge-commit and rebase merges; a squash merge reads
+# breaks from the squash commit GitHub writes instead (see the README). A
+# monorepo runs it once per package, each appending to the same output file,
+# and posts that file once with core/pr-comment-update. The section is dated
+# today in UTC, which the comment calls provisional: the release dates it by its
+# merge commit.
+#
+# The job needs:
+# - actions/checkout of the event's default ref, the test merge
+#   refs/pull/N/merge, with fetch-depth: 0 (every tag and commit since the last
+#   release) and persist-credentials: false;
+# - permissions contents: read and pull-requests: read, to map each commit to
+#   its pull request (commits/{sha}/pulls); the step posting the comment needs
+#   pull-requests: write, which this action never uses.
+# A pull request with merge conflicts has no test merge, so there is nothing to
+# preview until they are resolved.
+
+inputs:
+  github-token:
+    description: "Token reading the pull request of each commit (contents and pull-requests: read)"
+    required: true
+  changelog-file:
+    description: >
+      The package's CHANGELOG.md, relative to the checkout, such as
+      apps/control-plane/CHANGELOG.md: the one release-on-label keeps with changelog: true
+    required: true
+  tag-prefix:
+    description: "Prefix of the package's release tags, as passed to the release"
+    required: false
+    default: "v"
+  paths:
+    description: >
+      Paths the package's release ships, separated by newlines or commas, as passed to
+      plan-release: package-dir and the shared-paths of release-on-label with
+      scope-to-package. Empty ships every commit
+    required: false
+    default: ""
+  semantic-branch-config:
+    description: "TOML file declaring [tool.semantic_branch], as passed to the release"
+    required: false
+    default: "pyproject.toml"
+  output:
+    description: >
+      Markdown file the package's preview is appended to; created with a header. Run the
+      previews after actions/checkout, which leaves no earlier file, so a re-run of the job
+      writes it afresh
+    required: false
+    default: "release-preview.md"
+  merge-sha:
+    description: "Test merge of the pull request into its base, two parents"
+    required: false
+    default: ${{ github.sha }}
+  pull-request-number:
+    description: "Number of the pull request"
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  pull-request-title:
+    description: "Title of the pull request, as it is now"
+    required: false
+    default: ${{ github.event.pull_request.title }}
+  head-ref:
+    description: "Branch of the pull request, whose class sets the version part"
+    required: false
+    default: ${{ github.event.pull_request.head.ref }}
+  repository-slug:
+    description: "owner/repo the pull requests live in"
+    required: false
+    default: ${{ github.repository }}
+
+outputs:
+  output:
+    description: "Markdown file holding the preview"
+    value: ${{ inputs.output }}
+  version:
+    description: "Version a labelled merge would release; empty for no release or a failure"
+    value: ${{ steps.preview.outputs.version }}
+  failed:
+    description: "Whether the release would fail, the preview showing its error"
+    value: ${{ steps.preview.outputs.failed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Preview the release
+      id: preview
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        MERGE_SHA: ${{ inputs.merge-sha }}
+        REPOSITORY_SLUG: ${{ inputs.repository-slug }}
+        PULL_REQUEST_NUMBER: ${{ inputs.pull-request-number }}
+        PULL_REQUEST_TITLE: ${{ inputs.pull-request-title }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        SEMANTIC_BRANCH_CONFIG: ${{ inputs.semantic-branch-config }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        RELEASE_PATHS: ${{ inputs.paths }}
+        CHANGELOG_FILE: ${{ inputs.changelog-file }}
+        OUTPUT: ${{ inputs.output }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/../src/preview_changelog.py" \
+          --merge-sha="${MERGE_SHA}" --slug "${REPOSITORY_SLUG}" \
+          --pull-request-number "${PULL_REQUEST_NUMBER}" \
+          --pull-request-title="${PULL_REQUEST_TITLE}" --head-ref="${HEAD_REF}" \
+          --semantic-branch-config "${SEMANTIC_BRANCH_CONFIG}" --tag-prefix="${TAG_PREFIX}" \
+          --changelog-file "${CHANGELOG_FILE}" --output "${OUTPUT}" >> "$GITHUB_OUTPUT"

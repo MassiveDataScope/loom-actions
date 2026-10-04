@@ -124,6 +124,16 @@ def commit_message(repository: Path, sha: str) -> str:
     return _git(repository, "log", "-1", "--pretty=%B", sha)
 
 
+def commit_parents(repository: Path, revision: str) -> tuple[str, ...]:
+    """Return the parents of *revision*, in order: two for a merge, none for a root.
+
+    Raises:
+        HistoryError: When *revision* names no commit.
+    """
+    line = _git(repository, "rev-list", "--parents", "-n", "1", f"{revision}^{{commit}}")
+    return tuple(line.split()[1:])
+
+
 def commit_timestamp(repository: Path, sha: str) -> int:
     """Return the committer time of *sha*, in seconds since the epoch."""
     return int(_git(repository, "log", "-1", "--pretty=%ct", sha).strip())

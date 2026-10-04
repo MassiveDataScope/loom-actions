@@ -639,6 +639,25 @@ class TestBuildChangelog:
 
         assert "## [0.2.0] - 2026-10-04\n" in text
 
+    def test_a_date_passed_in_replaces_the_merge_commits_date(self, tmp_path: Path) -> None:
+        """A preview dates the section it shows today, before any merge commit exists."""
+        repository = _repository(tmp_path)
+        _git(repository, "tag", "v0.1.0")
+        merge = _commit(repository, "feat: one", when="2026-10-05T01:30:00+02:00")
+
+        notes = build_changelog(
+            repository,
+            merge,
+            "0.2.0",
+            _reader({merge: (_pr(2, "feat: one"),)}),
+            changelog_file="CHANGELOG.md",
+            scope=ReleaseScope("v"),
+            repository_url=URL,
+            date="2026-12-31",
+        ).notes
+
+        assert notes.startswith("## [0.2.0] - 2026-12-31\n")
+
     def test_a_listed_version_is_kept_even_if_a_title_was_since_made_invalid(
         self, tmp_path: Path
     ) -> None:

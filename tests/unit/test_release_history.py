@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "actions" / "release" / "plan
 from release_history import (  # noqa: E402
     HistoryError,
     PullRequest,
+    commit_parents,
     gh_commit_pull_requests,
     latest_release_tag,
     merged_pull_requests,
@@ -155,3 +156,33 @@ class TestPullRequests:
 
         assert merged_pull_requests(lambda _sha: (closed, merged), "abc") == (merged,)
         assert merged_pull_requests(lambda _sha: (closed,), "abc") == ()
+
+
+class TestCommitParents:
+    def test_a_commit_lists_its_one_parent(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        first = _git(repository, "rev-parse", "HEAD")
+        second = _touch(repository, "a", "fix: one")
+
+        assert commit_parents(repository, second) == (first,)
+
+    def test_a_merge_lists_its_parents_in_order(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+        _git(repository, "checkout", "-qb", "feat/x")
+        head = _touch(repository, "a", "feat: one")
+        _git(repository, "checkout", "-q", "master")
+        base = _touch(repository, "b", "fix: two")
+        _git(repository, "merge", "-q", "--no-ff", "-m", "Merge feat/x", "feat/x")
+
+        assert commit_parents(repository, "HEAD") == (base, head)
+
+    def test_the_root_commit_has_none(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+
+        assert commit_parents(repository, "HEAD") == ()
+
+    def test_an_unknown_revision_is_a_history_error(self, tmp_path: Path) -> None:
+        repository = _repository(tmp_path)
+
+        with pytest.raises(HistoryError):
+            commit_parents(repository, "no-such-revision")

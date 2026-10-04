@@ -21,7 +21,7 @@ import argparse
 import os
 import re
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 from release_tags import DEFAULT_TAG_PREFIX, TagPrefixError, check_tag_prefix
@@ -113,6 +113,25 @@ class ReleaseScope:
 
 
 DEFAULT_SCOPE: Final[ReleaseScope] = ReleaseScope()
+
+
+def add_release_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the checkout, the release commit and the repository every release script reads."""
+    parser.add_argument("--repository", type=Path, default=Path.cwd())
+    parser.add_argument("--merge-sha", required=True)
+    parser.add_argument("--slug", required=True, help="owner/repo the pull requests live in")
+
+
+def add_server_url_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the GitHub server the links of a changelog point to, for :func:`repository_url`."""
+    parser.add_argument(
+        "--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    )
+
+
+def repository_url(options: argparse.Namespace) -> str:
+    """Return the URL of the repository the options of the two functions above name."""
+    return f"{options.server_url.rstrip('/')}/{options.slug}"
 
 
 def add_scope_arguments(parser: argparse.ArgumentParser) -> None:

@@ -54,7 +54,6 @@ of the changelog, while ``prefix: "fix"`` lists them under Fixed.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from collections.abc import Sequence
@@ -82,7 +81,10 @@ from release_scope import (
     DEFAULT_SCOPE,
     ReleaseScope,
     ReleaseScopeError,
+    add_release_arguments,
     add_scope_arguments,
+    add_server_url_argument,
+    repository_url,
     scope_of,
 )
 
@@ -466,8 +468,13 @@ def build_changelog(
     changelog_file: str,
     scope: ReleaseScope = DEFAULT_SCOPE,
     repository_url: str,
+    date: str | None = None,
 ) -> ChangelogUpdate:
     """Return the changelog with the release *merge_sha* ships, and its notes.
+
+    The section is dated *date*, ``YYYY-MM-DD``, when given: a preview has no
+    merge commit to date it by yet. Otherwise it is :func:`release_date` of
+    *merge_sha*, as a release dates it.
 
     Raises:
         ChangelogError: When the file is not allowed, git cannot read the range,
@@ -484,7 +491,7 @@ def build_changelog(
         changes = shipped_changes(
             repository, last_tag, merge_sha, pull_requests, repository_url, scope
         )
-        date = release_date(repository, merge_sha)
+        date = date if date is not None else release_date(repository, merge_sha)
     except HistoryError as error:
         raise ChangelogError(str(error)) from error
     entries = [entry for change in changes if (entry := classify(change)) is not None]
@@ -497,18 +504,14 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Add the release to a Keep a Changelog file and write its notes."
     )
-    parser.add_argument("--repository", type=Path, default=Path.cwd())
-    parser.add_argument("--merge-sha", required=True)
-    parser.add_argument("--slug", required=True, help="owner/repo the pull requests live in")
+    add_release_arguments(parser)
     parser.add_argument("--version", required=True)
     add_scope_arguments(parser)
     parser.add_argument(
         "--changelog-file", required=True, help="CHANGELOG.md to update, relative to the root"
     )
     parser.add_argument("--notes-output", type=Path, required=True)
-    parser.add_argument(
-        "--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-    )
+    add_server_url_argument(parser)
     return parser.parse_args(arguments)
 
 
@@ -528,7 +531,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             gh_commit_pull_requests(options.slug),
             changelog_file=options.changelog_file,
             scope=scope_of(options),
-            repository_url=f"{options.server_url.rstrip('/')}/{options.slug}",
+            repository_url=repository_url(options),
         )
     except (ReleaseScopeError, ChangelogError) as error:
         _fail(str(error))

@@ -1,5 +1,5 @@
 name: "Changelog Conventional Commit"
-description: "Generate changelog from conventional commits"
+description: "Generate changelog from conventional commits. Deprecated: new callers use plan-release/preview with changelog: true"
 
 inputs:
   mode:
