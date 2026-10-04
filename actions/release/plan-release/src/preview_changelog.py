@@ -1,0 +1,336 @@
+"""Preview, on an open pull request, the release a labelled merge of it would ship.
+
+The preview reruns the release itself rather than imitating it: the planner of
+:mod:`plan_release` and the changelog of :mod:`changelog_file`, on the test
+merge GitHub checks out for a ``pull_request`` event (``refs/pull/N/merge``),
+whose first parent is the head of the base branch and whose second is the head
+of the pull request. The one thing a release knows that an open pull request
+does not is that it merged, so the commits the second parent brings in are read
+as belonging to the pull request, merged, under the title it has now; every
+other commit is read from GitHub as the release reads it. So the preview shows:
+
+- the version, from the last ``<prefix>`` tag, the class of every shipped
+  branch and the declared breaks, the pull request's title included;
+- the section the release adds to the changelog, which is also the body of its
+  GitHub Release: the pull requests merged since the last tag and not released
+  yet, and this one, scoped to the paths of the package;
+- "no release" when no commit since the last tag touches those paths, or the
+  error the release would stop on, word for word, such as a title that is not
+  a Conventional Commits header.
+
+It previews a release that keeps a changelog (``changelog: true`` on
+release-on-label). The section is dated today, in UTC, which is provisional:
+the release dates it by its merge commit. One run previews one package and
+appends it to a Markdown file, so a monorepo runs it once per package and posts
+the file as one comment.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Final, NoReturn
+
+from changelog_file import ChangelogError, build_changelog
+from plan_release import NothingToRelease, ReleasePlanError, plan_release
+from release_history import (
+    CommitPullRequests,
+    HistoryError,
+    PullRequest,
+    commit_parents,
+    gh_commit_pull_requests,
+    range_log,
+)
+from release_scope import (
+    DEFAULT_SCOPE,
+    ReleaseScope,
+    ReleaseScopeError,
+    add_scope_arguments,
+    scope_of,
+)
+
+HEADER: Final[str] = (
+    "## Release preview\n"
+    "\n"
+    "> [!NOTE]\n"
+    "> A preview, not a release: nothing is tagged or written. Each package below shows\n"
+    "> what merging this pull request with the release label would release: the version\n"
+    "> and the section added to its changelog, which is also the GitHub Release body.\n"
+    "> The pull request is read as merged under the title it has now, so editing the\n"
+    "> title updates the preview.\n"
+    "\n"
+)
+_BACKTICKS: Final[re.Pattern[str]] = re.compile(r"`+")
+
+
+class PreviewError(RuntimeError):
+    """Raised when the checkout cannot be previewed as a merge of the pull request."""
+
+
+@dataclass(frozen=True, slots=True)
+class OpenPullRequest:
+    """The pull request a preview reads as merged: its number, title and branch."""
+
+    number: int
+    title: str
+    head_ref: str
+
+    def as_merged(self) -> PullRequest:
+        """Return the pull request as the release reads it once merged."""
+        return PullRequest(self.number, self.title, self.head_ref, merged=True)
+
+
+def _brought_in(
+    repository: Path, merge_sha: str, scope: ReleaseScope = DEFAULT_SCOPE
+) -> tuple[str, ...]:
+    parents = commit_parents(repository, merge_sha)
+    if len(parents) != 2:
+        raise PreviewError(
+            f"commit {merge_sha} is not a merge of the pull request into its base: preview "
+            "the test merge a pull_request event checks out, github.sha"
+        )
+    return range_log(repository, parents[0], merge_sha, scope)
+
+
+def pull_request_commits(repository: Path, merge_sha: str) -> frozenset[str]:
+    """Return the commits the test merge *merge_sha* brings into the base branch.
+
+    They are the non-merge commits its second parent holds and its first, the
+    head of the base branch, does not: the commits of the pull request.
+
+    Raises:
+        PreviewError: When *merge_sha* is not a merge of two parents.
+        HistoryError: When git cannot read it.
+    """
+    return frozenset(_brought_in(repository, merge_sha))
+
+
+def as_merged(
+    read: CommitPullRequests, pull_request: OpenPullRequest, commits: frozenset[str]
+) -> CommitPullRequests:
+    """Return *read*, except that each of *commits* belongs to *pull_request*, merged."""
+    merged = (pull_request.as_merged(),)
+
+    def reader(sha: str) -> tuple[PullRequest, ...]:
+        return merged if sha in commits else read(sha)
+
+    return reader
+
+
+def _fenced(text: str, info: str) -> str:
+    longest = max((len(run) for run in _BACKTICKS.findall(text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    body = text.rstrip("\n")
+    return f"{fence}{info}\n{body}\n{fence}\n"
+
+
+@dataclass(frozen=True, slots=True)
+class ReleasePreview:
+    """What a labelled merge would release for one package.
+
+    Attributes:
+        tag_prefix: Prefix of the package's release tags.
+        version:    Version it would release; empty when it releases nothing
+            or fails.
+        part:       Version part the shipped branches ask for.
+        last_tag:   Release tag the version follows, or None for a first one.
+        notes:      The changelog section, with its link, the release would add.
+        error:      The error the release would stop on, as it reports it.
+        reason:     Why nothing would be released.
+        touched:    Whether a commit of the pull request touches the paths.
+    """
+
+    tag_prefix: str
+    version: str = ""
+    part: str = ""
+    last_tag: str | None = None
+    notes: str = ""
+    error: str = ""
+    reason: str = ""
+    touched: bool = True
+
+    def render(self, changelog_file: str) -> str:
+        """Return the package's part of the preview comment, in Markdown."""
+        if self.error:
+            return (
+                f"### `{self.tag_prefix}`: the release would fail\n\n"
+                "A labelled merge would stop on this error before writing any tag:\n\n"
+                f"{_fenced(self.error, 'text')}"
+            )
+        if not self.version:
+            return (
+                f"### `{self.tag_prefix}`: no release\n\n"
+                f"A labelled merge would release nothing for `{self.tag_prefix}`: "
+                f"{self.reason}.\n"
+            )
+        return self._release(changelog_file)
+
+    def _release(self, changelog_file: str) -> str:
+        tag = f"{self.tag_prefix}{self.version}"
+        after = f"after `{self.last_tag}`" if self.last_tag else "as its first release"
+        lines = [
+            f"### `{self.tag_prefix}`: `{tag}` ({self.part})\n",
+            f"A labelled merge would tag `{tag}` {after} and add this section to "
+            f"`{changelog_file}`; its date is today's in UTC, provisional: the release "
+            "dates it by its merge commit.\n",
+        ]
+        if not self.touched:
+            lines.append(
+                "This pull request changes none of its paths: the section lists what was "
+                "merged before it and is not released yet, which its labelled merge releases.\n"
+            )
+        lines.append(_fenced(self.notes, "markdown"))
+        return "\n".join(lines)
+
+
+def _preview(
+    repository: Path,
+    merge_sha: str,
+    pull_request: OpenPullRequest,
+    read: CommitPullRequests,
+    *,
+    config: Path,
+    scope: ReleaseScope,
+    changelog_file: str,
+    repository_url: str,
+    date: str,
+) -> ReleasePreview:
+    shipping = as_merged(read, pull_request, pull_request_commits(repository, merge_sha))
+    touched = bool(_brought_in(repository, merge_sha, scope))
+    try:
+        plan = plan_release(repository, merge_sha, shipping, config=config, scope=scope)
+    except NothingToRelease as nothing:
+        return ReleasePreview(scope.tag_prefix, reason=str(nothing), touched=touched)
+    update = build_changelog(
+        repository,
+        merge_sha,
+        plan.version,
+        shipping,
+        changelog_file=changelog_file,
+        scope=scope,
+        repository_url=repository_url,
+        date=date,
+    )
+    return ReleasePreview(
+        scope.tag_prefix, plan.version, plan.part, plan.last_tag, update.notes, touched=touched
+    )
+
+
+def preview_release(
+    repository: Path,
+    merge_sha: str,
+    pull_request: OpenPullRequest,
+    read: CommitPullRequests,
+    *,
+    config: Path,
+    scope: ReleaseScope,
+    changelog_file: str,
+    repository_url: str,
+    date: str,
+) -> ReleasePreview:
+    """Return what a labelled merge of *pull_request* would release for *scope*.
+
+    Args:
+        repository:     Checkout holding the test merge and every tag.
+        merge_sha:      The test merge of the pull request into its base.
+        pull_request:   The pull request, read as merged under its title now.
+        read:           Reader of the pull requests of the other commits.
+        config:         TOML file holding the branch rules, as the release reads it.
+        scope:          Tag prefix and paths of the package.
+        changelog_file: The package's ``CHANGELOG.md``.
+        repository_url: URL the changelog links pull requests and tags to.
+        date:           Date of the section, ``YYYY-MM-DD``.
+
+    Returns:
+        The release, no release, or the error the release would stop on, with
+        the same message the release prints.
+
+    Raises:
+        PreviewError: When *merge_sha* is not a merge of two parents.
+        HistoryError: When git or GitHub cannot be read.
+    """
+    try:
+        return _preview(
+            repository,
+            merge_sha,
+            pull_request,
+            read,
+            config=config,
+            scope=scope,
+            changelog_file=changelog_file,
+            repository_url=repository_url,
+            date=date,
+        )
+    except ReleasePlanError as error:
+        return ReleasePreview(scope.tag_prefix, error=f"release plan failed: {error}")
+    except ChangelogError as error:
+        return ReleasePreview(scope.tag_prefix, error=f"changelog failed: {error}")
+
+
+def append_preview(output: Path, text: str) -> None:
+    """Append *text* to *output*, starting a new file with :data:`HEADER`."""
+    existing = output.read_text(encoding="utf-8") if output.is_file() else ""
+    separator = "\n" if existing else HEADER
+    output.write_text(f"{existing}{separator}{text}", encoding="utf-8")
+
+
+def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Preview the release a labelled merge of a pull request would ship."
+    )
+    parser.add_argument("--repository", type=Path, default=Path.cwd())
+    parser.add_argument("--merge-sha", required=True, help="the test merge of the pull request")
+    parser.add_argument("--slug", required=True, help="owner/repo the pull requests live in")
+    parser.add_argument("--pull-request-number", type=int, required=True)
+    parser.add_argument("--pull-request-title", required=True)
+    parser.add_argument("--head-ref", required=True, help="branch of the pull request")
+    parser.add_argument("--semantic-branch-config", default="pyproject.toml")
+    add_scope_arguments(parser)
+    parser.add_argument("--changelog-file", required=True)
+    parser.add_argument("--output", type=Path, required=True, help="Markdown file to append to")
+    parser.add_argument("--date", default=datetime.now(UTC).date().isoformat())
+    parser.add_argument(
+        "--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    )
+    return parser.parse_args(arguments)
+
+
+def _fail(message: str) -> NoReturn:
+    print(f"release preview failed: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    """Append the preview to the output and print ``version=`` and ``failed=`` outputs."""
+    options = _parse_args(arguments)
+    pull_request = OpenPullRequest(
+        options.pull_request_number, options.pull_request_title, options.head_ref
+    )
+    try:
+        preview = preview_release(
+            options.repository,
+            options.merge_sha,
+            pull_request,
+            gh_commit_pull_requests(options.slug),
+            config=Path(options.semantic_branch_config or "pyproject.toml"),
+            scope=scope_of(options),
+            changelog_file=options.changelog_file,
+            repository_url=f"{options.server_url.rstrip('/')}/{options.slug}",
+            date=options.date,
+        )
+    except (ReleaseScopeError, PreviewError, HistoryError) as error:
+        _fail(str(error))
+    append_preview(options.output, preview.render(options.changelog_file))
+    print(f"version={preview.version}")
+    print(f"failed={'true' if preview.error else 'false'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
