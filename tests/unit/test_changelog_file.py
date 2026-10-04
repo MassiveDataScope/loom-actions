@@ -174,6 +174,18 @@ class TestClassify:
         with pytest.raises(ChangelogError, match="not a Conventional Commits header"):
             classify(_change(title))
 
+    def test_a_revert_button_title_is_a_change_reverting_the_quoted_header(self) -> None:
+        """GitHub's revert button and ``git revert`` both title the revert ``Revert "<title>"``."""
+        entry = classify(_change('Revert "feat(api): add the endpoint"'))
+
+        assert entry == Entry(
+            "Changed", f"**Reverted:** feat(api): add the endpoint ([#7]({URL}/pull/7))"
+        )
+
+    def test_a_revert_of_a_title_that_is_no_header_is_refused(self) -> None:
+        with pytest.raises(ChangelogError, match="'Add the thing' is not a Conventional"):
+            classify(_change('Revert "Add the thing"'))
+
     @pytest.mark.parametrize("title", ["spike: try it", "spike!: try it", "spike(api)!: try it"])
     def test_a_type_without_a_section_is_refused_instead_of_dropped(self, title: str) -> None:
         with pytest.raises(ChangelogError, match="type 'spike' has no changelog section"):

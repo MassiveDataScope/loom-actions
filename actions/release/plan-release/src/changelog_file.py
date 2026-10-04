@@ -30,6 +30,9 @@ dropped, so a mistyped title fails the release before its tag is written.
 ``perf``/``refactor`` Changed
 ``revert``            Changed: a revert undoes a feature, a fix or a refactor
                       alike, and only for a feature would Removed be right
+``Revert "<header>"`` Changed, as ``**Reverted:** <header>``: the title GitHub's
+                      revert button and ``git revert`` write; the quoted
+                      header must be a Conventional Commits header itself
 ``deprecate``         Deprecated: no other convention marks a deprecation, so
                       the section is filled only when a title says so
 ``remove``            Removed
@@ -38,8 +41,14 @@ dropped, so a mistyped title fails the release before its tag is written.
 ``style``, ``test``
 any type with ``!``   Changed, marked ``**BREAKING:**``; so is any title whose
 or a footer           pull request holds a commit with a ``BREAKING CHANGE:``
-                      footer, which also made the planner raise a major
+                      footer; the planner raises a major for the same marks,
+                      and a version that is not that major is refused
 ====================  ==========================================================
+
+Dependabot titles its pull requests ``Bump x from 1 to 2``, which is no header.
+Its ``commit-message`` option gives them one: ``prefix: "build"`` with
+``include: "scope"`` titles them ``build(deps): bump x from 1 to 2``, left out
+of the changelog, while ``prefix: "fix"`` lists them under Fixed.
 """
 
 from __future__ import annotations
@@ -105,6 +114,8 @@ INTRO: Final[str] = (
 )
 _NEW_FILE: Final[str] = f"{INTRO}\n## [Unreleased]\n"
 _NO_CHANGES: Final[str] = "No user-facing changes."
+# The title GitHub's revert button gives the pull request, and git revert the commit.
+_REVERT: Final[re.Pattern[str]] = re.compile(r'Revert "(?P<header>.+)"')
 _SECURITY_SCOPE: Final[re.Pattern[str]] = re.compile(r"sec(urity)?")
 _UNRELEASED: Final[re.Pattern[str]] = re.compile(r"^## \[unreleased\]\s*$", re.IGNORECASE)
 _REFERENCE: Final[re.Pattern[str]] = re.compile(r"^\[[^\]]+\]: \S+$")
@@ -175,36 +186,48 @@ def _section(kind: str, scope: str | None) -> str | None:
     )
 
 
-def classify(change: Change) -> Entry | None:
-    """Return the changelog entry of *change*, or None when no user sees it.
-
-    The type is checked before the break, so a break never lets an unknown
-    type through.
-
-    Raises:
-        ChangelogError: When the title is not a Conventional Commits header or
-            its type has no section.
-    """
-    parsed = ConventionalCommit.parse(change.title)
+def _parse_title(title: str) -> ConventionalCommit:
+    parsed = ConventionalCommit.parse(title)
     if parsed is None:
         raise ChangelogError(
-            f"'{change.title}' is not a Conventional Commits header, such as "
+            f"'{title}' is not a Conventional Commits header, such as "
             "'feat(api): add the endpoint': edit the pull request title and re-run"
         )
-    section = _section(parsed.type, parsed.scope)
-    breaking = change.breaking or parsed.breaking
-    if breaking:
-        section = "Changed"
-    if section is None:
-        return None
-    text = parsed.description
-    if parsed.scope:
-        text = f"**{parsed.scope}:** {text}"
+    return parsed
+
+
+def _entry(section: str, text: str, change: Change, breaking: bool) -> Entry:
     if breaking:
         text = f"**BREAKING:** {text}"
     if change.reference:
         text = f"{text} ({change.reference})"
     return Entry(section, text, breaking)
+
+
+def classify(change: Change) -> Entry | None:
+    """Return the changelog entry of *change*, or None when no user sees it.
+
+    A title ``Revert "<header>"``, the one GitHub's revert button and
+    ``git revert`` write, is a change reverting that header. Otherwise the type
+    is checked before the break, so a break never lets an unknown type through.
+
+    Raises:
+        ChangelogError: When the title, or the header a revert quotes, is not a
+            Conventional Commits header, or its type has no section.
+    """
+    reverted = _REVERT.fullmatch(change.title.strip())
+    if reverted is not None:
+        _parse_title(reverted["header"])
+        return _entry("Changed", f"**Reverted:** {reverted['header']}", change, change.breaking)
+    parsed = _parse_title(change.title)
+    section = _section(parsed.type, parsed.scope)
+    breaking = change.breaking or parsed.breaking
+    if breaking:
+        section = "Changed"
+    elif section is None:
+        return None
+    text = f"**{parsed.scope}:** {parsed.description}" if parsed.scope else parsed.description
+    return _entry(section, text, change, breaking)
 
 
 def shipped_changes(
