@@ -109,6 +109,12 @@ on:
       distribution-built:
         description: "Whether a distribution was built and left as an artifact"
         value: ${{ jobs.build.outputs.built == 'true' }}
+      changelog-committed:
+        description: >-
+          Whether the base branch holds the changelog with the release, committed by this
+          run or already; false without changelog, or when the commit failed after the
+          release was published, which the run reports as a warning
+        value: ${{ jobs.release.outputs.changelog-committed == 'true' }}
 
 jobs:
   plan:
@@ -126,8 +132,6 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       release_sha: ${{ env.MERGE_SHA }}
       changelog_file: ${{ env.CHANGELOG_FILE }}
-      changelog_changed: ${{ steps.plan.outputs.changelog-changed }}
-      changelog_blob: ${{ steps.changelog.outputs.blob }}
     env:
       MERGE_SHA: ${{ inputs.merge-sha != '' && inputs.merge-sha || github.event.pull_request.merge_commit_sha }}
       # Empty unless the caller keeps a changelog; the planner then touches no file.
@@ -227,6 +231,9 @@ jobs:
       # reusable workflow cannot use a path-relative action, and the caller's SHA
       # pin would otherwise mean nothing while this reference moved with every
       # release. The composite at this commit is the one in this tree.
+      # PLACEHOLDER: 33412af is not that commit yet. Replace this pin and the
+      # commit-changelog pin below with the commit of the v1.11.0 release, which
+      # holds the planner this tree passes paths to, before this workflow ships.
       - name: Plan the release
         id: plan
         uses: MassiveDataScope/loom-actions/actions/release/plan-release@33412af61b9cb01f90e58a6dd88beaf4f8216447 # v1.11.0
@@ -250,20 +257,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      # The planner built the file on the head of the base branch checked out
-      # above. The commit names that blob, so a branch whose file has changed
-      # since refuses it instead of losing the change; empty creates the file.
-      - name: Find the changelog the release builds on
-        id: changelog
-        if: ${{ inputs.changelog }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          BLOB=$(git rev-parse --verify --quiet "HEAD:${CHANGELOG_FILE}" || true)
-          echo "blob=${BLOB}" >> "$GITHUB_OUTPUT"
-
+      # The file the planner built on the head of the base branch checked out
+      # above, holding the release; the release job commits it once published.
       - name: Store the changelog
-        if: ${{ inputs.changelog && steps.plan.outputs.changelog-changed == 'true' }}
+        if: ${{ inputs.changelog && steps.plan.outputs.version != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: changelog
@@ -392,6 +389,8 @@ jobs:
 
   release:
     needs: [plan, build]
+    outputs:
+      changelog-committed: ${{ steps.commit-changelog.outcome == 'success' }}
     if: ${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure' && needs.plan.outputs.version != '' }}
     runs-on: ubuntu-latest
     permissions:
@@ -437,35 +436,47 @@ jobs:
           name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
           body_path: CHANGELOG_RELEASE.md
 
-      # Last, so the file never lists a release that was not published. A re-run
-      # finds the version already listed and commits nothing.
+      # Last, so the file never lists a release that was not published. The tag
+      # and the release exist by now, so neither step can fail the run: a
+      # failure is the warning below. Re-running all jobs plans again on the
+      # base branch as it is then; the commit finds the version listed, or adds it.
       - name: Download the changelog
-        if: ${{ inputs.changelog && needs.plan.outputs.changelog_changed == 'true' }}
+        id: download-changelog
+        if: ${{ inputs.changelog }}
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: changelog
           path: changelog
 
       # Through the contents API, so the commit needs no checkout and no
-      # persisted credential, and GitHub signs it. It changes only CHANGELOG.md,
-      # which the planner passes over in the next release's range.
+      # persisted credential, and GitHub signs it. The composite reads the file
+      # on the branch again and adds the release on top, retrying a 409, so a
+      # change made since the plan is kept. The commit changes only
+      # CHANGELOG.md, which the planner passes over in the next release's range.
       - name: Commit the changelog
-        if: ${{ inputs.changelog && needs.plan.outputs.changelog_changed == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CHANGELOG_FILE: ${{ needs.plan.outputs.changelog_file }}
-          BLOB_SHA: ${{ needs.plan.outputs.changelog_blob }}
-          BASE_BRANCH: ${{ inputs.base-branch }}
-          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        id: commit-changelog
+        if: ${{ inputs.changelog && steps.download-changelog.outcome == 'success' }}
+        continue-on-error: true
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release/commit-changelog@33412af61b9cb01f90e58a6dd88beaf4f8216447 # v1.11.0
+        with:
+          changelog-file: ${{ needs.plan.outputs.changelog_file }}
+          built-file: changelog/CHANGELOG.md
+          version: ${{ needs.plan.outputs.version }}
+          tag-prefix: ${{ inputs.tag-prefix }}
+          base-branch: ${{ inputs.base-branch }}
+          repository-slug: ${{ github.repository }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warn that the changelog was not committed
+        if: ${{ inputs.changelog && (steps.download-changelog.outcome == 'failure' || steps.commit-changelog.outcome == 'failure') }}
         shell: bash
+        env:
+          CHANGELOG_FILE: ${{ needs.plan.outputs.changelog_file }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+          TAG: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
-          jq -n \
-            --arg message "docs(release): changelog for ${TAG_PREFIX}${VERSION}" \
-            --arg branch "${BASE_BRANCH}" \
-            --arg sha "${BLOB_SHA}" \
-            --rawfile text changelog/CHANGELOG.md \
-            '{message: $message, branch: $branch, content: ($text | @base64)}
-             + (if $sha == "" then {} else {sha: $sha} end)' \
-            | gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${CHANGELOG_FILE}" \
-              --input - --jq .commit.sha
+          MESSAGE="${TAG} is released, but ${CHANGELOG_FILE} was not committed to ${BASE_BRANCH}; see the step above. To add it, re-run all jobs of this run, or run the caller again with merge-sha: ${RELEASE_SHA}. The tag and the GitHub Release are kept, and the commit adds the release to the file as the branch holds it then. If ${BASE_BRANCH} only takes pull requests, let GITHUB_TOKEN bypass that rule, or commit the file by hand."
+          echo "::warning title=Changelog not committed::${MESSAGE}"
+          printf '%s\n' "${MESSAGE}" >> "$GITHUB_STEP_SUMMARY"
