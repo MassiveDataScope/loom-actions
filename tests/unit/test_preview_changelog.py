@@ -296,7 +296,7 @@ class TestRender:
         assert text.startswith("### `app-a/v`: `app-a/v0.2.0` (minor)\n")
         assert "after `app-a/v0.1.0`" in text
         assert f"```markdown\n{notes}```\n" in text
-        assert "its date is today's in UTC, provisional" in text
+        assert "The date is today's in UTC and provisional: the release dates" in text
 
     def test_no_release_says_why(self) -> None:
         preview = ReleasePreview("app-b/v", reason="nothing to release: no commits", touched=False)
@@ -304,7 +304,7 @@ class TestRender:
         text = preview.render("apps/app-b/CHANGELOG.md")
 
         assert text.startswith("### `app-b/v`: no release\n")
-        assert "nothing to release: no commits" in text
+        assert "would not release `app-b/v` (nothing to release: no commits).\n" in text
 
     def test_an_error_is_fenced_longer_than_any_backticks_it_holds(self) -> None:
         preview = ReleasePreview("app-a/v", error="changelog failed: '```x' is not")

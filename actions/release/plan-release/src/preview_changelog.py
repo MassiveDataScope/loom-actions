@@ -166,8 +166,7 @@ class ReleasePreview:
         if not self.version:
             return (
                 f"### `{self.tag_prefix}`: no release\n\n"
-                f"A labelled merge would release nothing for `{self.tag_prefix}`: "
-                f"{self.reason}.\n"
+                f"A labelled merge would not release `{self.tag_prefix}` ({self.reason}).\n"
             )
         return self._release(changelog_file)
 
@@ -177,8 +176,8 @@ class ReleasePreview:
         lines = [
             f"### `{self.tag_prefix}`: `{tag}` ({self.part})\n",
             f"A labelled merge would tag `{tag}` {after} and add this section to "
-            f"`{changelog_file}`; its date is today's in UTC, provisional: the release "
-            "dates it by its merge commit.\n",
+            f"`{changelog_file}`. The date is today's in UTC and provisional: the release "
+            "dates the section by its merge commit.\n",
         ]
         if not self.touched:
             lines.append(
