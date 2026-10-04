@@ -1,3 +1,40 @@
+# 🚀 Release 1.13.2 ([#75](https://github.com/MassiveDataScope/loom-actions/pull/75)) ([`ce92fd0`](https://github.com/MassiveDataScope/loom-actions/commit/ce92fd033125a889cc30049ceae30bfe4b9c9c34))
+
+
+
+## 🐛 Fixes
+### plan-release
+- **plan-release:** raise IgnoredBranchesOnly when every branch ships no version<br>
+  > The planner now raises IgnoredBranchesOnly, a ReleasePlanError subclass, where
+  > it raised ReleasePlanError because every branch since the last tag belongs to
+  > a class that ships no version. The message, exit code and stderr of the CLI are
+  > unchanged, so a labelled merge of such branches still stops the release; the
+  > dedicated class only lets the preview tell this refusal apart.
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **plan-release:** preview an ignored branch class as no release<br>
+  > A pull request from a ci/, chore/, docs/... branch is not labelled for
+  > release, yet its preview showed "the release would fail" when every branch
+  > since the last tag ships no version. When the planner raises
+  > IgnoredBranchesOnly and the pull request's own branch belongs to a class that
+  > ships no version, the preview now renders "no release" with a plain line that
+  > quotes the error a labelled merge would stop on, and outputs failed=false.
+  > A versioned branch over such a range, and every other planner or changelog
+  > error, still renders as "the release would fail".
+  > Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Opus 5.5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.13.1 ([#73](https://github.com/MassiveDataScope/loom-actions/pull/73)) ([`b7a986f`](https://github.com/MassiveDataScope/loom-actions/commit/b7a986f628c9fb7c8e60a52189091e1ac6e8dd32))
 
 
