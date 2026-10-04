@@ -161,22 +161,12 @@ class TestTheStep:
         assert "- **api:** add one ([#4](https://github.com/acme/repo/pull/4))" in preview
 
 
-# The plan-release release-on-label runs today: v1.11.0. The preview matches the
-# release when both run the same plan-release source; this composite ships after
-# that pin, so a follow-up moves release-on-label to the release that ships it and
-# updates RELEASED_PLANNER and empties DIVERGED_SINCE_PIN.
-RELEASED_PLANNER = "aa40fd0bd251822a2907475a0a8140495f6cb98e"
-# src/ files that differ from the pinned planner: the preview itself, an optional
-# date for the changelog section, commit_parents, and the command-line arguments
-# the scripts now declare once in release_scope. None changes the version or the
-# section a release computes; any other difference must be looked at.
-DIVERGED_SINCE_PIN = {
-    "changelog_file.py",
-    "plan_release.py",
-    "preview_changelog.py",
-    "release_history.py",
-    "release_scope.py",
-}
+# The plan-release release-on-label runs: v1.13.0, the release that ships the
+# preview. The preview matches the release when both run the same plan-release
+# source, so any src/ file that differs from this pin must be listed below.
+RELEASED_PLANNER = "8a9655b82b19ddf147a1b50e53dcd5638b23f884"
+# src/ files that differ from the pinned planner: none.
+DIVERGED_SINCE_PIN: set[str] = set()
 
 
 class TestThePlannerTheReleaseRuns:
