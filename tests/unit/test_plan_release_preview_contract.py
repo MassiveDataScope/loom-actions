@@ -165,9 +165,12 @@ class TestTheStep:
 # release when both run the same plan-release source, so any src/ file that
 # differs from this pin must be listed below.
 RELEASED_PLANNER = "293c2d786d2891663e9d79c8f25b65b7671e538b"
-# src/ files that differ from the pinned planner. None changes behaviour:
-# - preview_changelog.py: its module docstring no longer names a pinned version.
-DIVERGED_SINCE_PIN: set[str] = {"preview_changelog.py"}
+# src/ files that differ from the pinned planner:
+# - preview_changelog.py: its module docstring no longer names a pinned version;
+# - release_history.py reads a squash merge GitHub associates with no pull request
+#   from the (#N) of its subject, which the pinned planner still refuses.
+# A follow-up moves release-on-label's pin to the release that ships them.
+DIVERGED_SINCE_PIN: set[str] = {"preview_changelog.py", "release_history.py"}
 
 
 class TestThePlannerTheReleaseRuns:

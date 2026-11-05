@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -24,6 +25,9 @@ from release_tags import DEFAULT_TAG_PREFIX, release_tag_glob, release_tag_patte
 # The file name Keep a Changelog 1.1.0 gives the changelog, and the only one a
 # release commits with no pull request.
 CHANGELOG_NAME: Final[str] = "CHANGELOG.md"
+
+# The pull request number GitHub appends to the subject of a squash merge.
+_SQUASH_SUBJECT: Final[re.Pattern[str]] = re.compile(r"\(#(\d+)\)\s*$")
 
 
 class HistoryError(RuntimeError):
@@ -153,8 +157,44 @@ def changes_only_changelogs(repository: Path, sha: str) -> bool:
     return bool(paths) and all(PurePosixPath(path).name == CHANGELOG_NAME for path in paths)
 
 
+def _squash_pull_request(slug: str, sha: str) -> tuple[PullRequest, ...]:
+    """Return the pull request whose squash merge is *sha*, read from its subject.
+
+    GitHub's commit-to-pull-request index can miss a squash merge. Its subject
+    ends in ``(#N)``, and pull request N is taken only when it merged as *sha*
+    itself, so a direct push that names a pull request is still none.
+    """
+    message = run(("gh", "api", f"repos/{slug}/commits/{sha}", "--jq", ".commit.message"))
+    subject = message.splitlines()[0] if message else ""
+    match = _SQUASH_SUBJECT.search(subject)
+    if match is None:
+        return ()
+    try:
+        output = run(
+            (
+                "gh",
+                "api",
+                f"repos/{slug}/pulls/{match.group(1)}",
+                "--jq",
+                "{number, title, head_ref: .head.ref, merged: (.merged_at != null),"
+                " merge_commit_sha}",
+            )
+        )
+    except HistoryError:
+        # N may name an issue or no pull request at all: the commit then has none.
+        return ()
+    item = json.loads(output)
+    if not item["merged"] or item["merge_commit_sha"] != sha:
+        return ()
+    return (PullRequest(int(item["number"]), str(item["title"]), str(item["head_ref"]), True),)
+
+
 def gh_commit_pull_requests(slug: str) -> CommitPullRequests:
-    """Return a reader of every pull request of *slug* that holds a commit."""
+    """Return a reader of every pull request of *slug* that holds a commit.
+
+    A commit GitHub associates with no pull request falls back to the squash
+    merge its subject names, as ``_squash_pull_request`` checks it.
+    """
 
     def read(sha: str) -> tuple[PullRequest, ...]:
         output = run(
@@ -166,12 +206,13 @@ def gh_commit_pull_requests(slug: str) -> CommitPullRequests:
                 "[.[] | {number, title, head_ref: .head.ref, merged: (.merged_at != null)}]",
             )
         )
-        return tuple(
+        pull_requests = tuple(
             PullRequest(
                 int(item["number"]), str(item["title"]), str(item["head_ref"]), item["merged"]
             )
             for item in json.loads(output)
         )
+        return pull_requests or _squash_pull_request(slug, sha)
 
     return read
 
