@@ -54,7 +54,7 @@ jobs:
     needs: [detect]
     if: ${{ needs.detect.outputs.is_release_branch != 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -138,7 +138,7 @@ jobs:
     needs: [detect]
     if: ${{ needs.detect.outputs.is_release_branch == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
