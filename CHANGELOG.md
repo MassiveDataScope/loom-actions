@@ -1,3 +1,20 @@
+# 🚀 Release 1.13.4 ([#81](https://github.com/MassiveDataScope/loom-actions/pull/81)) ([`7c843e4`](https://github.com/MassiveDataScope/loom-actions/commit/7c843e4c4ef01a515174702bdd6714de868aee37))
+
+
+
+## 🐛 Fixes
+### release
+- **release:** read an unassociated squash merge from its (#N) subject
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.13.3 ([#77](https://github.com/MassiveDataScope/loom-actions/pull/77)) ([`35ab5fe`](https://github.com/MassiveDataScope/loom-actions/commit/35ab5fe8ccec13937d5b1162053303338d8d9955))
 
 
