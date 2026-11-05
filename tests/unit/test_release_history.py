@@ -128,6 +128,52 @@ def _stub_gh(tmp_path: Path, answer: object) -> dict[str, str]:
     return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LOG": str(log)}
 
 
+_SQUASH_SHA = "d93f3adb321b00514c8fb0c71da98f6979e3d394"
+
+
+def _stub_routed_gh(tmp_path: Path, routes: dict[str, object]) -> dict[str, str]:
+    """Answer each ``gh api <endpoint>`` with its route, and fail on any other endpoint.
+
+    A string answer is printed raw, as ``--jq`` prints a string; any other is JSON.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "gh.log"
+    cases = "".join(
+        f"  {endpoint}) cat <<'JSON'\n"
+        f"{answer if isinstance(answer, str) else json.dumps(answer)}\nJSON\n    ;;\n"
+        for endpoint, answer in routes.items()
+    )
+    gh = bin_dir / "gh"
+    gh.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$2" >> "{log}"\ncase "$2" in\n{cases}'
+        '  *) echo "HTTP 404: Not Found" >&2; exit 1 ;;\nesac\n',
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LOG": str(log)}
+
+
+def _squash_routes(subject: str, pull_request: object | None) -> dict[str, object]:
+    routes: dict[str, object] = {
+        f"repos/acme/repo/commits/{_SQUASH_SHA}/pulls": [],
+        f"repos/acme/repo/commits/{_SQUASH_SHA}": f"{subject}\n\nbody\n",
+    }
+    if pull_request is not None:
+        routes["repos/acme/repo/pulls/444"] = pull_request
+    return routes
+
+
+def _pull_444(merged: bool, merge_commit_sha: str) -> dict[str, object]:
+    return {
+        "number": 444,
+        "title": "feat(stores): joined stores",
+        "head_ref": "feat/joined-stores",
+        "merged": merged,
+        "merge_commit_sha": merge_commit_sha,
+    }
+
+
 class TestPullRequests:
     def test_the_reader_returns_every_pull_request_with_its_branch_and_state(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -149,6 +195,42 @@ class TestPullRequests:
         assert arguments[:3] == ["api", "repos/acme/repo/commits/abc/pulls", "--jq"]
         assert "head_ref: .head.ref" in arguments[3]
         assert "merged: (.merged_at != null)" in arguments[3]
+
+    def test_an_unassociated_squash_merge_is_read_from_its_subject(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        routes = _squash_routes("feat(stores): joined stores (#444)", _pull_444(True, _SQUASH_SHA))
+        monkeypatch.setenv("PATH", _stub_routed_gh(tmp_path, routes)["PATH"])
+
+        assert gh_commit_pull_requests("acme/repo")(_SQUASH_SHA) == (
+            PullRequest(444, "feat(stores): joined stores", "feat/joined-stores", True),
+        )
+
+    @pytest.mark.parametrize(
+        "pull_request",
+        [
+            pytest.param(_pull_444(True, "0" * 40), id="merged-as-another-commit"),
+            pytest.param(_pull_444(False, _SQUASH_SHA), id="not-merged"),
+            pytest.param(None, id="no-such-pull-request"),
+        ],
+    )
+    def test_a_subject_naming_a_pull_request_that_did_not_merge_as_the_commit_has_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pull_request: object | None
+    ) -> None:
+        routes = _squash_routes("fix: pushed straight to master (#444)", pull_request)
+        monkeypatch.setenv("PATH", _stub_routed_gh(tmp_path, routes)["PATH"])
+
+        assert gh_commit_pull_requests("acme/repo")(_SQUASH_SHA) == ()
+
+    def test_a_subject_naming_no_pull_request_is_not_looked_up(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        routes = _squash_routes("fix: pushed straight to master", _pull_444(True, _SQUASH_SHA))
+        stub = _stub_routed_gh(tmp_path, routes)
+        monkeypatch.setenv("PATH", stub["PATH"])
+
+        assert gh_commit_pull_requests("acme/repo")(_SQUASH_SHA) == ()
+        assert "repos/acme/repo/pulls/444" not in Path(stub["LOG"]).read_text("utf-8")
 
     def test_only_merged_pull_requests_shipped_the_commit(self) -> None:
         merged = PullRequest(1, "feat: a", "feat/a", True)
