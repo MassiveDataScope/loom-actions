@@ -161,16 +161,12 @@ class TestTheStep:
         assert "- **api:** add one ([#4](https://github.com/acme/repo/pull/4))" in preview
 
 
-# The plan-release release-on-label runs: v1.13.2. The preview matches the
+# The plan-release release-on-label runs: v1.13.4. The preview matches the
 # release when both run the same plan-release source, so any src/ file that
 # differs from this pin must be listed below.
-RELEASED_PLANNER = "293c2d786d2891663e9d79c8f25b65b7671e538b"
-# src/ files that differ from the pinned planner:
-# - preview_changelog.py: its module docstring no longer names a pinned version;
-# - release_history.py reads a squash merge GitHub associates with no pull request
-#   from the (#N) of its subject, which the pinned planner still refuses.
-# A follow-up moves release-on-label's pin to the release that ships them.
-DIVERGED_SINCE_PIN: set[str] = {"preview_changelog.py", "release_history.py"}
+RELEASED_PLANNER = "6d9dc866ee550148c7f49802f147cc11553d0726"
+# src/ files that differ from the pinned planner: none.
+DIVERGED_SINCE_PIN: set[str] = set()
 
 
 class TestThePlannerTheReleaseRuns:
