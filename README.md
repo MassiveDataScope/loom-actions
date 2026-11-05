@@ -234,9 +234,9 @@ jobs:
 
 - The planner (`actions/release/plan-release`) and its `commit-changelog` composite are
   pinned by the commit of a release, so a caller's SHA pin on this workflow also fixes the
-  planner it runs. Both pins point at the v1.13.2 release, which holds the `paths`
-  input and the `commit-changelog` composite this workflow uses.
-- The workflow passes `tag-prefix` (`v` by default) to the planner it pins (v1.13.2), which
+  planner it runs. Both pins point at the v1.13.4 release, which holds the `paths`
+  input, the `commit-changelog` composite this workflow uses and the squash-merge fallback.
+- The workflow passes `tag-prefix` (`v` by default) to the planner it pins (v1.13.4), which
   reads only the tags `<prefix>X.Y.Z` to find the last release and write the notes, so a
   monorepo package released as `control-plane/v0.1.0` never plans from another package's
   tags. The same prefix names the tag the workflow creates, the major tag it moves, the tag
@@ -343,7 +343,7 @@ The section is dated today in UTC, marked provisional: the release dates it by i
 commit.
 
 It matches the release when both run the same plan-release source. The release runs the
-planner `release-on-label` pins, v1.13.2 (`293c2d7`); pin
+planner `release-on-label` pins, v1.13.4 (`6d9dc86`); pin
 the preview to the same release. `tests/unit/test_plan_release_preview_contract.py` records the
 pin and fails when the planner source differs from it.
 

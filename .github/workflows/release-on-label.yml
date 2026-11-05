@@ -248,7 +248,7 @@ jobs:
       # so a caller pinned to it previews with the planner it releases with.
       - name: Plan the release
         id: plan
-        uses: MassiveDataScope/loom-actions/actions/release/plan-release@293c2d786d2891663e9d79c8f25b65b7671e538b # v1.13.2
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release@6d9dc866ee550148c7f49802f147cc11553d0726 # v1.13.4
         with:
           merge-sha: ${{ env.MERGE_SHA }}
           repository-slug: ${{ github.repository }}
@@ -470,7 +470,7 @@ jobs:
         id: commit-changelog
         if: ${{ inputs.changelog && steps.download-changelog.outcome == 'success' }}
         continue-on-error: true
-        uses: MassiveDataScope/loom-actions/actions/release/plan-release/commit-changelog@293c2d786d2891663e9d79c8f25b65b7671e538b # v1.13.2
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release/commit-changelog@6d9dc866ee550148c7f49802f147cc11553d0726 # v1.13.4
         with:
           changelog-file: ${{ needs.plan.outputs.changelog_file }}
           built-file: changelog/CHANGELOG.md
