@@ -31,18 +31,23 @@ runs:
         fi
 
     - name: Update or create comment
-      uses: actions/github-script@v7
+      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+      env:
+        COMMENT_TAGS: ${{ inputs.tags }}
+        BODY_FILE: ${{ inputs.body-file }}
       with:
         github-token: ${{ inputs.github-token }}
+        # Inputs reach the script through the environment, never through template
+        # expansion, so a caller passing PR data cannot inject code.
         script: |
           const fs = require('fs');
-          const tags = `${{ inputs.tags }}`.split(',').map(t => t.trim()).filter(Boolean);
+          const tags = (process.env.COMMENT_TAGS || '').split(',').map(t => t.trim()).filter(Boolean);
           if (tags.length === 0) {
             core.setFailed('No tags provided');
             return;
           }
 
-          const body = fs.readFileSync('${{ inputs.body-file }}', 'utf8');
+          const body = fs.readFileSync(process.env.BODY_FILE, 'utf8');
           const full = `${tags.join('\n')}\n${body}`;
 
           const { owner, repo } = context.repo;

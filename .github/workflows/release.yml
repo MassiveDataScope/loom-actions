@@ -5,9 +5,8 @@ on:
     types: [closed]
     branches: ["master"]
 
-permissions:
-  contents: write
-  pull-requests: write
+# Each job asks for what it uses; the workflow default grants nothing.
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -17,6 +16,7 @@ jobs:
   detect:
     if: ${{ github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       branch: ${{ steps.pr.outputs.branch }}
       pr_number: ${{ steps.pr.outputs.pr_number }}
@@ -53,16 +53,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: [detect]
     if: ${{ needs.detect.outputs.is_release_branch != 'true' }}
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3
 
       # The branch name sets the part. A commit since the last release that
       # declares a break raises it to a major, read by the same code
@@ -98,7 +102,7 @@ jobs:
       - name: Open or update release PR
         if: ${{ steps.version.outputs.deploy == 'true' }}
         id: cpr
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.1.0
         with:
           token: ${{ secrets.RELEASE_BOT_TOKEN != '' && secrets.RELEASE_BOT_TOKEN || secrets.GITHUB_TOKEN }}
           branch: release/${{ steps.version.outputs.version }}
@@ -124,23 +128,29 @@ jobs:
         if: ${{ steps.version.outputs.deploy == 'true' && steps.cpr.outputs.pull-request-number != '' }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_BOT_TOKEN != '' && secrets.RELEASE_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASE_PR: ${{ steps.cpr.outputs.pull-request-number }}
         shell: bash
         run: |
           set -euo pipefail
-          gh pr merge "${{ steps.cpr.outputs.pull-request-number }}" \
+          gh pr merge "${RELEASE_PR}" \
             --squash \
             --auto \
             --delete-branch \
-            --repo "${{ github.repository }}"
+            --repo "${GITHUB_REPOSITORY}"
 
   publish-release:
     runs-on: ubuntu-latest
     needs: [detect]
     if: ${{ needs.detect.outputs.is_release_branch == 'true' }}
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      # This job pushes the release tags with git, so it keeps the checkout token.
+      # It runs only after a release/* PR is merged and never executes PR code.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Derive release note section from CHANGELOG
         shell: bash
@@ -195,7 +205,7 @@ jobs:
 
       - name: Create GitHub release
         if: ${{ steps.tag.outputs.tag_created == 'true' }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ needs.detect.outputs.release_version }}
           name: v${{ needs.detect.outputs.release_version }}
