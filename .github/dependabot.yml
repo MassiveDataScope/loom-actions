@@ -10,6 +10,9 @@ updates:
       - /actions/**
     schedule:
       interval: weekly
+    # A release must be a week old before it is proposed; security updates skip this.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
 
   # The Python tools some composite actions install at run time.
@@ -20,4 +23,7 @@ updates:
       - /actions/release/versioning-branch-semantic
     schedule:
       interval: weekly
+    # A release must be a week old before it is proposed; security updates skip this.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
