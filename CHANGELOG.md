@@ -1,3 +1,20 @@
+# 🚀 Release 1.13.6 ([#85](https://github.com/MassiveDataScope/loom-actions/pull/85)) ([`76b2015`](https://github.com/MassiveDataScope/loom-actions/commit/76b20154d1522cadf811afc20e2a836aa2a68440))
+
+
+
+## 🐛 Fixes
+### ci
+- **ci:** pin every action by SHA and grant each job only what it uses
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.13.5 ([#83](https://github.com/MassiveDataScope/loom-actions/pull/83)) ([`de3e296`](https://github.com/MassiveDataScope/loom-actions/commit/de3e296f242be48b24e8411d594efc8765652989))
 
 
