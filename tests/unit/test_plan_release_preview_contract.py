@@ -165,8 +165,9 @@ class TestTheStep:
 # release when both run the same plan-release source, so any src/ file that
 # differs from this pin must be listed below.
 RELEASED_PLANNER = "6d9dc866ee550148c7f49802f147cc11553d0726"
-# src/ files that differ from the pinned planner: none.
-DIVERGED_SINCE_PIN: set[str] = set()
+# src/ files that differ from the pinned planner. commit_changelog.py gained the
+# render and verify modes; the preview never runs it, so it still matches the release.
+DIVERGED_SINCE_PIN: set[str] = {"commit_changelog.py"}
 
 
 class TestThePlannerTheReleaseRuns:

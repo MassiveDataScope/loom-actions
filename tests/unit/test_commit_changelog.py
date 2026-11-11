@@ -24,13 +24,15 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "actions" / "release" / "plan-release" / "src"))
 
-from changelog_file import INTRO, update_changelog  # noqa: E402
+from changelog_file import INTRO, ChangelogError, update_changelog  # noqa: E402
 from commit_changelog import (  # noqa: E402
     CommitConflict,
     ContentsApi,
     RemoteFile,
     commit_release,
     main,
+    render_release,
+    verify_release,
 )
 from release_history import HistoryError  # noqa: E402
 
@@ -305,3 +307,371 @@ class TestTheComposite:
         assert "sha" not in sent
         text = base64.b64decode(sent["content"]).decode("utf-8")
         assert "## [0.2.0] - 2026-10-05" in text
+
+
+# Modes render and verify (contract L-a). A release that never writes its base
+# branch commits the changelog on the pull request's head by hand; render builds
+# the file it expects, without writing, and verify checks a ref already holds
+# the planned section. The heading date is the one part they treat apart: render
+# reuses the date of a section the ref already lists, else today's in UTC, and
+# verify requires an ISO 8601 date without comparing its value, so a merge on
+# another UTC day than the render never breaks the check.
+
+
+def _dated(text: str, date: str) -> str:
+    return text.replace("## [0.2.0] - 2026-10-05", f"## [0.2.0] - {date}")
+
+
+class TestRenderRelease:
+    def test_renders_what_commit_would_write(self) -> None:
+        branch = FakeBranch([RemoteFile(BASE, "a" * 40)])
+        commit_release(BUILT, "0.2.0", branch, MESSAGE, sleep=lambda _: pytest.fail("no retry"))
+        ((committed, _, _),) = branch.written
+
+        assert render_release(BUILT, BASE, "0.2.0", today="2026-10-05") == committed
+
+    def test_a_ref_without_the_section_is_dated_today(self) -> None:
+        rendered = render_release(BUILT, BASE, "0.2.0", today="2026-11-11")
+
+        assert rendered == _dated(BUILT, "2026-11-11")
+
+    def test_a_ref_listing_the_section_keeps_its_date(self) -> None:
+        onto = _dated(BUILT, "2026-10-01")
+
+        assert render_release(BUILT, onto, "0.2.0", today="2026-11-11") == onto
+
+    def test_a_stale_section_is_replaced_and_keeps_its_date(self) -> None:
+        onto = _dated(BUILT, "2026-10-01").replace("- add it\n", "- added by hand\n")
+
+        rendered = render_release(BUILT, onto, "0.2.0", today="2026-11-11")
+
+        assert rendered == _dated(BUILT, "2026-10-01")
+
+    def test_a_section_without_an_iso_date_is_dated_today(self) -> None:
+        onto = _dated(BUILT, "someday")
+
+        assert render_release(BUILT, onto, "0.2.0", today="2026-11-11") == _dated(
+            BUILT, "2026-11-11"
+        )
+
+    def test_a_built_file_without_the_release_is_refused(self) -> None:
+        with pytest.raises(ChangelogError, match="does not list 0.2.0"):
+            render_release(BASE, BASE, "0.2.0", today="2026-11-11")
+
+
+class TestVerifyRelease:
+    def test_the_identical_file_passes(self) -> None:
+        verify_release(BUILT, BUILT, "0.2.0")
+
+    def test_a_ref_without_the_section_fails(self) -> None:
+        with pytest.raises(ChangelogError, match=r"does not list 0\.2\.0"):
+            verify_release(BUILT, BASE, "0.2.0")
+
+    def test_an_altered_section_fails(self) -> None:
+        altered = BUILT.replace("- add it\n", "- add it, and more\n")
+
+        with pytest.raises(ChangelogError, match="differs from the planned one"):
+            verify_release(BUILT, altered, "0.2.0")
+
+    def test_an_altered_link_fails(self) -> None:
+        altered = BUILT.replace("compare/v0.1.0...v0.2.0", "compare/v0.0.9...v0.2.0")
+
+        with pytest.raises(ChangelogError, match="differs from the planned one"):
+            verify_release(BUILT, altered, "0.2.0")
+
+    def test_a_section_of_another_version_fails(self) -> None:
+        other = BUILT.replace("[0.2.0]", "[0.3.0]")
+
+        with pytest.raises(ChangelogError, match=r"does not list 0\.2\.0"):
+            verify_release(BUILT, other, "0.2.0")
+
+    def test_only_the_date_differing_passes(self) -> None:
+        verify_release(BUILT, _dated(BUILT, "2027-01-01"), "0.2.0")
+
+    @pytest.mark.parametrize("date", ["2026-10-5", "2026-13-01", "2026/10/05", "someday", ""])
+    def test_a_date_that_is_not_iso_fails(self, date: str) -> None:
+        onto = BUILT.replace("## [0.2.0] - 2026-10-05", f"## [0.2.0] - {date}".rstrip())
+
+        with pytest.raises(ChangelogError, match="ISO 8601"):
+            verify_release(BUILT, onto, "0.2.0")
+
+    def test_a_second_section_of_the_version_below_the_real_one_fails(self) -> None:
+        body, _, references = BUILT.partition("\n\n[unreleased]:")
+        twice = f"{body}\n\n{SECTION}\n[unreleased]:{references}"
+
+        with pytest.raises(ChangelogError, match=r"lists 0\.2\.0 2 times"):
+            verify_release(BUILT, twice, "0.2.0")
+
+    def test_a_link_of_the_version_defined_in_the_body_fails(self) -> None:
+        hijacked = BUILT.replace(
+            "## [Unreleased]\n", "## [Unreleased]\n\n[0.2.0]: https://attacker.example\n"
+        )
+
+        with pytest.raises(ChangelogError, match="link of 0.2.0 outside the link references"):
+            verify_release(BUILT, hijacked, "0.2.0")
+
+    def test_a_link_of_the_version_defined_in_the_body_fails_in_any_case(self) -> None:
+        hijacked = BUILT.replace(
+            "### Added\n", "### Added\n\n   [0.2.0]: https://attacker.example\n"
+        )
+
+        with pytest.raises(ChangelogError, match="link of 0.2.0 outside the link references"):
+            verify_release(BUILT, hijacked, "0.2.0")
+
+    def test_the_section_below_older_versions_fails(self) -> None:
+        moved = BUILT.replace(SECTION + "\n", "").replace(
+            "- repair it\n", f"- repair it\n\n{SECTION}"
+        )
+        assert moved.index("## [0.2.0]") > moved.index("## [0.1.0]")
+
+        with pytest.raises(ChangelogError, match="differs from the expected file"):
+            verify_release(BUILT, moved, "0.2.0")
+
+    def test_an_altered_unreleased_link_fails(self) -> None:
+        altered = BUILT.replace("compare/v0.2.0...HEAD", "compare/v0.1.0...HEAD")
+
+        with pytest.raises(ChangelogError, match="differs from the expected file"):
+            verify_release(BUILT, altered, "0.2.0")
+
+    def test_crlf_line_endings_fail(self) -> None:
+        with pytest.raises(ChangelogError, match="differs from the expected file"):
+            verify_release(BUILT, BUILT.replace("\n", "\r\n"), "0.2.0")
+
+    def test_an_extra_blank_line_fails(self) -> None:
+        with pytest.raises(ChangelogError, match="differs from the expected file"):
+            verify_release(
+                BUILT, BUILT.replace("## [Unreleased]\n", "## [Unreleased]\n\n"), "0.2.0"
+            )
+
+
+def _arguments(built: Path, *extra: str) -> list[str]:
+    return [
+        *("--slug", "acme/repo", "--branch", "master"),
+        *("--changelog-file", "apps/api/CHANGELOG.md", "--built", str(built)),
+        *("--version", "0.2.0", "--tag-prefix=api/v"),
+        *extra,
+    ]
+
+
+@dataclass
+class ReadOnlyRefs:
+    """Branches read through the contents API, failing any write."""
+
+    files: dict[str, str]
+    opened: list[tuple[str, str, str]] = field(default_factory=list)
+
+    def __call__(self, slug: str, path: str, ref: str) -> FakeBranch:
+        self.opened.append((slug, path, ref))
+        return FakeBranch([RemoteFile(self.files[ref], "a" * 40)], conflicts=99)
+
+
+class TestMainModes:
+    @pytest.fixture
+    def built(self, tmp_path: Path) -> Path:
+        path = tmp_path / "built" / "CHANGELOG.md"
+        path.parent.mkdir()
+        path.write_text(BUILT, "utf-8")
+        return path
+
+    def test_render_writes_the_expected_file_from_the_ref_and_commits_nothing(
+        self,
+        tmp_path: Path,
+        built: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        refs = ReadOnlyRefs({"release/1.2": BASE})
+        monkeypatch.setattr("commit_changelog.ContentsApi", refs)
+        monkeypatch.setattr("commit_changelog._today", lambda: "2026-11-11")
+        out = tmp_path / "expected" / "CHANGELOG.md"
+
+        code = main(
+            _arguments(built, "--mode", "render", "--ref", "release/1.2", "--out", str(out))
+        )
+
+        assert code == 0
+        assert refs.opened == [("acme/repo", "apps/api/CHANGELOG.md", "release/1.2")]
+        assert out.read_text("utf-8") == _dated(BUILT, "2026-11-11")
+        assert capsys.readouterr().out == "changed=true\n"
+
+    def test_the_ref_defaults_to_the_base_branch(
+        self,
+        tmp_path: Path,
+        built: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        refs = ReadOnlyRefs({"master": BUILT})
+        monkeypatch.setattr("commit_changelog.ContentsApi", refs)
+        out = tmp_path / "CHANGELOG.md"
+
+        assert main(_arguments(built, "--mode", "render", "--ref", "", "--out", str(out))) == 0
+
+        assert refs.opened == [("acme/repo", "apps/api/CHANGELOG.md", "master")]
+        assert out.read_text("utf-8") == BUILT
+        assert capsys.readouterr().out == "changed=false\n"
+
+    def test_render_without_an_output_file_fails(
+        self, built: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exited:
+            main(_arguments(built, "--mode", "render"))
+
+        assert exited.value.code == 1
+        assert "changelog render failed: render needs --out" in capsys.readouterr().err
+
+    def test_verify_passes_on_a_ref_holding_the_section(
+        self,
+        built: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        refs = ReadOnlyRefs({"c0ffee": _dated(BUILT, "2026-10-01")})
+        monkeypatch.setattr("commit_changelog.ContentsApi", refs)
+
+        assert main(_arguments(built, "--mode", "verify", "--ref", "c0ffee")) == 0
+
+        assert capsys.readouterr().out == "changed=false\n"
+
+    def test_verify_fails_and_leaves_the_expected_file(
+        self,
+        tmp_path: Path,
+        built: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        refs = ReadOnlyRefs({"c0ffee": BASE})
+        monkeypatch.setattr("commit_changelog.ContentsApi", refs)
+        monkeypatch.setattr("commit_changelog._today", lambda: "2026-11-11")
+        out = tmp_path / "CHANGELOG.md"
+
+        with pytest.raises(SystemExit) as exited:
+            main(_arguments(built, "--mode", "verify", "--ref", "c0ffee", "--out", str(out)))
+
+        assert exited.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == "changed=true\n"
+        assert captured.err.startswith("changelog verify failed: ")
+        assert "'apps/api/CHANGELOG.md' on 'c0ffee'" in captured.err
+        assert "does not list 0.2.0" in captured.err
+        assert out.read_text("utf-8") == _dated(BUILT, "2026-11-11")
+
+    def test_a_ref_with_control_characters_reaches_stderr_escaped(
+        self,
+        built: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        refs = ReadOnlyRefs({"x\x1b[2Jy": BASE})
+        monkeypatch.setattr("commit_changelog.ContentsApi", refs)
+
+        with pytest.raises(SystemExit):
+            main(_arguments(built, "--mode", "verify", "--ref", "x\x1b[2Jy"))
+
+        err = capsys.readouterr().err
+        assert "\x1b" not in err
+        assert "'x\\x1b[2Jy'" in err
+
+    def test_an_unknown_mode_is_refused(self, built: Path) -> None:
+        with pytest.raises(SystemExit) as exited:
+            main(_arguments(built, "--mode", "push"))
+
+        assert exited.value.code == 2
+
+
+class TestTheCompositeModes:
+    def _action(self) -> dict[str, Any]:
+        return cast(dict[str, Any], yaml.safe_load((COMPOSITE / "action.yml").read_text("utf-8")))
+
+    def test_new_inputs_are_optional_and_default_to_commit(self) -> None:
+        inputs = self._action()["inputs"]
+
+        assert inputs["mode"]["default"] == "commit"
+        assert inputs["ref"]["default"] == ""
+        assert inputs["out"]["default"] == ""
+        assert not any(inputs[name].get("required") for name in ("mode", "ref", "out"))
+
+    def test_changed_is_the_steps_output(self) -> None:
+        action = self._action()
+        (step,) = action["runs"]["steps"]
+
+        assert action["outputs"]["changed"]["value"] == (
+            f"${{{{ steps.{step['id']}.outputs.changed }}}}"
+        )
+        assert step["env"]["MODE"] == "${{ inputs.mode }}"
+        assert step["env"]["REF"] == "${{ inputs.ref }}"
+        assert step["env"]["OUT"] == "${{ inputs.out }}"
+
+    def _run(
+        self, tmp_path: Path, served: str, **env: str
+    ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+        answer = _content(served)
+        stub = _stub_gh(
+            tmp_path,
+            'case "$*" in\n'
+            f"  *\"--method GET\"*) cat <<'JSON'\n{answer}\nJSON\n  ;;\n"
+            '  *) echo "unexpected write" >&2; exit 1 ;;\n'
+            "esac",
+        )
+        built = tmp_path / "changelog" / "CHANGELOG.md"
+        built.parent.mkdir()
+        built.write_text(BUILT, "utf-8")
+        script = tmp_path / "step.sh"
+        script.write_text(self._action()["runs"]["steps"][0]["run"], "utf-8")
+        output = tmp_path / "github_output"
+        output.write_text("", "utf-8")
+        result = subprocess.run(
+            ("bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)),
+            cwd=tmp_path,
+            env={
+                "PATH": stub["PATH"],
+                "HOME": str(tmp_path),
+                "GH_TOKEN": "token",
+                "CHANGELOG_FILE": "apps/api/CHANGELOG.md",
+                "BUILT_FILE": str(built),
+                "VERSION": "0.2.0",
+                "TAG_PREFIX": "api/v",
+                "BASE_BRANCH": "master",
+                "REPOSITORY_SLUG": "acme/repo",
+                "ACTION_PATH": str(COMPOSITE),
+                "GITHUB_OUTPUT": str(output),
+                **env,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result, output, Path(stub["LOG"])
+
+    def test_render_reads_the_ref_and_writes_out_without_a_put(self, tmp_path: Path) -> None:
+        onto = _dated(BUILT, "2026-10-01").replace("- add it\n", "- stale\n")
+        out = tmp_path / "expected.md"
+
+        result, output, log = self._run(
+            tmp_path, onto, MODE="render", REF="release/1.2", OUT=str(out)
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert out.read_text("utf-8") == _dated(BUILT, "2026-10-01")
+        assert output.read_text("utf-8") == "changed=true\n"
+        assert log.read_text("utf-8") == (
+            "api --method GET repos/acme/repo/contents/apps/api/CHANGELOG.md -f ref=release/1.2\n"
+        )
+
+    def test_verify_fails_on_an_altered_section_without_a_put(self, tmp_path: Path) -> None:
+        altered = BUILT.replace("- add it\n", "- add it, and more\n")
+
+        result, output, log = self._run(tmp_path, altered, MODE="verify", REF="c0ffee", OUT="")
+
+        assert result.returncode == 1
+        assert "changelog verify failed" in result.stderr
+        assert output.read_text("utf-8") == "changed=true\n"
+        assert "PUT" not in log.read_text("utf-8")
+
+    def test_verify_passes_when_only_the_date_differs(self, tmp_path: Path) -> None:
+        result, output, _ = self._run(
+            tmp_path, _dated(BUILT, "2027-01-01"), MODE="verify", REF="c0ffee", OUT=""
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert output.read_text("utf-8") == "changed=false\n"

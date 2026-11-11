@@ -63,6 +63,58 @@ job be skipped (a scanner that is off) without a required check going missing. P
 image is a different trigger with different permissions (`id-token: write`), so it belongs in
 its own workflow, not behind an input here.
 
+## commit-changelog: render and verify, so the bot never writes the base branch
+
+`commit-changelog` used to do one thing: render the release onto the base branch's
+`CHANGELOG.md` and commit it there through the contents API. A caller whose base branch
+only a person may write (a ruleset on `master`, a release that runs with a GitHub App
+token and must not commit) cannot use that. That caller commits the changelog itself, on
+the release pull request's head, and needs two things instead: the file it should commit,
+and a check that the file it merged is the one the release plans.
+
+The input `mode` adds both and leaves `commit` as the default:
+
+- `render` reads the file at `ref` (the base branch when empty), carries the planned
+  release onto it with the planner's own update, and writes the result to `out`. It never
+  writes to GitHub. A section the ref already lists for the version is replaced by the
+  planned one.
+- `verify` fails unless the file at `ref` is exactly the file `render` expects of it. With
+  `out`, it first leaves the expected file there for the caller to upload or diff. Each
+  of these fails with its own message:
+  - the version is missing;
+  - the version is listed more than once (a second section further down);
+  - its link (`[X.Y.Z]:`, in any case) is defined outside the reference block at the
+    bottom, where Markdown's first definition would win over the real one;
+  - the heading has no ISO 8601 date;
+  - the section or its link differ;
+  - the rest of the file differs: the position of the section, the `[unreleased]` link,
+    line endings, blank lines.
+- Both set the output `changed`: whether the file at `ref` differs from the expected one.
+
+The date gets its own rule. The heading is `## [X.Y.Z] - YYYY-MM-DD`, and the day a person
+renders the file is rarely the day the release merges. So `render` reuses the date of a
+section the ref already lists, or takes today's date in UTC if there is none. `verify`
+requires a valid ISO 8601 date but does not compare its value: it builds the expected file
+with the ref's own date, so a file that differs only in the date passes. A merge on another
+UTC day therefore never breaks the check.
+
+Refused: a separate `verify-changelog` action. `render` and `verify` need the same read,
+the same carry and the same date rule as `commit`. Keeping them in one script means the
+file a person commits is computed by the code that later verifies it. Also refused:
+changing `commit` to reuse the date too. It writes exactly what it wrote before, so no
+pinned caller sees a change.
+
+`verify` is only as independent as `built-file`. The planner leaves a version that a file
+already lists as it is, so `built-file` must be produced from a `CHANGELOG.md` that does
+not list the version yet:
+
+- on a pull request check, from the pull request's base SHA;
+- after the merge, from the merge commit's first parent (`merge^1`).
+
+It must never come from the merge commit, from the pull request's head or merge ref, or
+from the base branch after the merge. All of those already hold the section, so `verify`
+would compare the section with itself and always pass.
+
 ## What cannot be tested here
 
 These are exercised by a real release and by nothing else. They are listed so nobody reads
