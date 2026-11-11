@@ -1,3 +1,20 @@
+# 🚀 Release 1.14.0 ([#93](https://github.com/MassiveDataScope/loom-actions/pull/93)) ([`2beb232`](https://github.com/MassiveDataScope/loom-actions/commit/2beb232d583700472a996b5238b7319b759abc24))
+
+
+## ✨ Features
+### commit-changelog
+- **commit-changelog:** render and verify modes, for a release that never writes its base branch
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.13.6 ([#85](https://github.com/MassiveDataScope/loom-actions/pull/85)) ([`76b2015`](https://github.com/MassiveDataScope/loom-actions/commit/76b20154d1522cadf811afc20e2a836aa2a68440))
 
 
