@@ -188,7 +188,8 @@ class TestTheCommit:
     def test_the_composite_here_declares_every_input_passed(self) -> None:
         action = ROOT / "actions" / "release" / "plan-release" / "commit-changelog" / "action.yml"
         declared = set(yaml.safe_load(action.read_text("utf-8"))["inputs"])
-        assert set(self._commit()["with"]) == declared
+        # mode, ref and out are optional; the commit leaves them at their defaults.
+        assert set(self._commit()["with"]) == declared - {"mode", "ref", "out"}
 
     def test_no_expression_is_interpolated_into_a_script(self) -> None:
         for job in wf.jobs(NAME):

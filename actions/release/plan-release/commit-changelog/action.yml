@@ -1,11 +1,17 @@
 name: "Commit release changelog"
-description: "Commit the changelog plan-release built to the base branch, once the release exists"
+description: "Commit the changelog plan-release built to the base branch once the release exists, or render or verify it at a ref"
 
 # plan-release builds the file on the head of the base branch, before the tag;
 # this commits it after the GitHub Release, when the branch may have moved.
 # Each attempt reads the file the branch holds now and adds the release on top
 # with the planner's own update, retrying a 409 up to three times, so a change
 # made meanwhile is kept and a version already listed is never added twice.
+#
+# mode render and mode verify read the file at `ref` and never write: render
+# writes the file the ref should hold to `out`, and verify fails unless the ref
+# holds exactly that file, for a release that never writes its base branch.
+# render reuses the date of a section the ref lists (else today, UTC); verify
+# requires an ISO 8601 date and does not compare it.
 
 inputs:
   changelog-file:
@@ -28,13 +34,34 @@ inputs:
     description: "owner/repo the branch lives in"
     required: true
   github-token:
-    description: "Token allowed to write contents on the base branch"
+    description: "Token allowed to write contents on the base branch; read is enough to render or verify"
     required: true
+  mode:
+    description: >
+      commit (the default) commits the release to base-branch; render writes the changelog
+      ref should hold to out, without committing; verify fails unless ref holds exactly that
+      file, the heading date's value aside, and writes the expected file to out when given
+    required: false
+    default: "commit"
+  ref:
+    description: "Ref whose file render and verify read; empty reads base-branch"
+    required: false
+    default: ""
+  out:
+    description: "File render and verify write the expected changelog to; required by render"
+    required: false
+    default: ""
+
+outputs:
+  changed:
+    description: "render and verify: whether the file at ref differs from the expected one"
+    value: ${{ steps.changelog.outputs.changed }}
 
 runs:
   using: composite
   steps:
     - name: Commit the changelog
+      id: changelog
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -44,10 +71,21 @@ runs:
         TAG_PREFIX: ${{ inputs.tag-prefix }}
         BASE_BRANCH: ${{ inputs.base-branch }}
         REPOSITORY_SLUG: ${{ inputs.repository-slug }}
+        MODE: ${{ inputs.mode }}
+        REF: ${{ inputs.ref }}
+        OUT: ${{ inputs.out }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        python3 "${ACTION_PATH}/../src/commit_changelog.py" \
-          --slug "${REPOSITORY_SLUG}" --branch "${BASE_BRANCH}" \
-          --changelog-file "${CHANGELOG_FILE}" --built "${BUILT_FILE}" \
+        args=(
+          --slug "${REPOSITORY_SLUG}" --branch "${BASE_BRANCH}"
+          --changelog-file "${CHANGELOG_FILE}" --built "${BUILT_FILE}"
           --version "${VERSION}" --tag-prefix="${TAG_PREFIX}"
+        )
+        if [ "${MODE:-commit}" = commit ]; then
+          python3 "${ACTION_PATH}/../src/commit_changelog.py" "${args[@]}"
+        else
+          # Only `changed=` goes to stdout; messages go to stderr.
+          python3 "${ACTION_PATH}/../src/commit_changelog.py" "${args[@]}" \
+            --mode="${MODE}" --ref="${REF}" --out="${OUT}" >> "$GITHUB_OUTPUT"
+        fi
