@@ -91,7 +91,10 @@ class TestEveryTagCarriesThePrefix:
 class TestThePrefixIsCheckedFirst:
     def test_it_is_checked_before_the_planner_and_any_tag(self) -> None:
         titles = _titles("plan")
-        assert titles[0] == CHECK
+        # 001-github-app L-b, contract Compatibilidad point 6: resolve-pr comes first, and
+        # without client-id it is skipped, so the prefix check is the first step that runs.
+        assert titles[:2] == ["Resolve the pull request of the release commit", CHECK]
+        assert wf.steps(NAME, "plan")[0]["if"] == "${{ inputs.client-id != '' }}"
         assert titles.index(CHECK) < titles.index("Plan the release") < titles.index(CREATE)
 
     def test_the_check_reads_the_prefix_from_the_environment(self) -> None:

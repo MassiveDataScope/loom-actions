@@ -7,6 +7,11 @@ name: release-on-label
 # Uploading it is NOT done here. PyPI's trusted publishing does not support
 # reusable workflows — the OIDC claim names this file, not the caller's — so the
 # caller publishes the artifact this workflow leaves behind. See PUBLISHING.md.
+#
+# With client-id, every write is made by a GitHub App: plan resolves and checks
+# the merged pull request first, then tag-app and release-app, in the caller's
+# environment, mint a token right before their first write. Without it, both
+# jobs are skipped and the release is the one v1.13.6 made. See the README.
 on:
   workflow_call:
     inputs:
@@ -100,6 +105,52 @@ on:
         required: false
         type: boolean
         default: false
+      client-id:
+        description: >-
+          Client ID of a GitHub App. Set, the tag, the major tag and the GitHub Release are
+          written by the jobs tag-app and release-app with an App token minted from
+          APP_PRIVATE_KEY, plan first resolves the merged pull request of merge-sha, and
+          nothing is written with GITHUB_TOKEN. Needs changelog: false and a push trigger on
+          base-branch. Empty, the default, releases as before
+        required: false
+        type: string
+        default: ""
+      environment:
+        description: >-
+          Environment of the jobs that mint the App token, holding APP_PRIVATE_KEY; required
+          with client-id
+        required: false
+        type: string
+        default: ""
+      changelog-verify:
+        description: >-
+          When a version is planned, fail the plan before any write unless the CHANGELOG.md of
+          package-dir at merge-sha holds exactly the section the planner builds on the file of
+          merge-sha's first parent
+        required: false
+        type: boolean
+        default: false
+      allowed-actors:
+        description: >-
+          With client-id, the logins, separated by spaces or newlines, that may trigger the jobs
+          minting the App token; each checks github.triggering_actor first, exactly. Required
+          with client-id: empty fails those jobs before any token exists
+        required: false
+        type: string
+        default: ""
+      allowed-head-prefixes:
+        description: >-
+          With client-id, the branch prefixes, separated by spaces or newlines, the head of the
+          released pull request must start with, such as "release/ hotfix/". Empty checks nothing
+        required: false
+        type: string
+        default: ""
+    secrets:
+      APP_PRIVATE_KEY:
+        description: >-
+          Private key of the App of client-id. Pass it by name, never with secrets: inherit;
+          the environment of the jobs that mint the token resolves it
+        required: false
     outputs:
       version:
         description: >-
@@ -115,6 +166,9 @@ on:
           run or already; false without changelog, or when the commit failed after the
           release was published, which the run reports as a warning
         value: ${{ jobs.release.outputs.changelog-committed == 'true' }}
+      release-sha:
+        description: "Commit the release was cut from"
+        value: ${{ jobs.plan.outputs.release_sha }}
 
 jobs:
   plan:
@@ -133,11 +187,94 @@ jobs:
       release_sha: ${{ env.MERGE_SHA }}
       changelog_file: ${{ env.CHANGELOG_FILE }}
       artifact_suffix: ${{ steps.artifacts.outputs.suffix }}
+      notes_b64: ${{ steps.notes.outputs.notes_b64 }}
     env:
       MERGE_SHA: ${{ inputs.merge-sha != '' && inputs.merge-sha || github.event.pull_request.merge_commit_sha }}
       # Empty unless the caller keeps a changelog; the planner then touches no file.
       CHANGELOG_FILE: ${{ inputs.changelog && (inputs.package-dir == '.' && 'CHANGELOG.md' || format('{0}/CHANGELOG.md', inputs.package-dir)) || '' }}
     steps:
+      # With an App, before anything else and with the plan's own token: the
+      # merged pull request of the release commit, which must be the only one,
+      # carry the release label and, when the caller names prefixes, come from
+      # one of them. A push carries no pull request, so this replaces the
+      # caller's checks on the pull_request event. GitHub may map a fresh merge
+      # commit to its pull request a little later, so only "none found" retries.
+      - name: Resolve the pull request of the release commit
+        id: resolve-pr
+        if: ${{ inputs.client-id != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+          RELEASE_LABEL: ${{ inputs.release-label }}
+          ALLOWED_HEAD_PREFIXES: ${{ inputs.allowed-head-prefixes }}
+          CHANGELOG: ${{ inputs.changelog }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          if [ "${CHANGELOG}" = "true" ]; then
+            echo "with client-id the workflow never commits the CHANGELOG; commit it on the release branch and set changelog-verify"
+            exit 1
+          fi
+          if [ -z "${ENVIRONMENT//[[:space:]]/}" ]; then
+            echo "with client-id the workflow needs environment, the environment that holds the App's private key"
+            exit 1
+          fi
+          if [[ ! "${MERGE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "merge-sha is not a 40-character hexadecimal SHA"
+            exit 1
+          fi
+          WAITS=(5 10 15 20)
+          ATTEMPT=1
+          while :; do
+            PULLS=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${MERGE_SHA}/pulls")
+            MATCHES=$(jq -c --arg sha "${MERGE_SHA}" --arg base "${BASE_BRANCH}" \
+              '[.[] | select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == $base)]' \
+              <<< "${PULLS}")
+            COUNT=$(jq length <<< "${MATCHES}")
+            if [ "${COUNT}" -gt 0 ] || [ "${ATTEMPT}" -ge 5 ]; then
+              break
+            fi
+            sleep "${WAITS[ATTEMPT - 1]}"
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          if [ "${COUNT}" -eq 0 ]; then
+            echo "no merged pull request into \`${BASE_BRANCH}\` has merge commit \`${MERGE_SHA}\` after 5 attempts; relaunch with workflow_dispatch on \`${BASE_BRANCH}\`"
+            exit 1
+          fi
+          if [ "${COUNT}" -gt 1 ]; then
+            echo "more than one merged pull request into \`${BASE_BRANCH}\` has merge commit \`${MERGE_SHA}\`"
+            exit 1
+          fi
+          NUMBER=$(jq -r '.[0].number' <<< "${MATCHES}")
+          HEAD_REF=$(jq -r '.[0].head.ref' <<< "${MATCHES}")
+          # A deleted fork leaves head.repo null.
+          HEAD_REPOSITORY=$(jq -r '.[0].head.repo.full_name // ""' <<< "${MATCHES}")
+          if ! jq -e --arg label "${RELEASE_LABEL}" '.[0].labels | any(.name == $label)' <<< "${MATCHES}" > /dev/null; then
+            echo "pull request #${NUMBER} is not labelled \`${RELEASE_LABEL}\`"
+            exit 1
+          fi
+          if [ "${HEAD_REPOSITORY}" != "${GITHUB_REPOSITORY}" ]; then
+            echo "pull request #${NUMBER} head repository \`${HEAD_REPOSITORY}\` is not \`${GITHUB_REPOSITORY}\`"
+            exit 1
+          fi
+          CHECKED=false
+          MATCHED=false
+          while IFS= read -r PREFIX; do
+            if [ -z "${PREFIX}" ]; then
+              continue
+            fi
+            CHECKED=true
+            if [[ "${HEAD_REF}" == "${PREFIX}"* ]]; then
+              MATCHED=true
+            fi
+          done < <(tr -s ' \t\r' '\n' <<< "${ALLOWED_HEAD_PREFIXES}")
+          if [ "${CHECKED}" = "true" ] && [ "${MATCHED}" != "true" ]; then
+            echo "pull request #${NUMBER} head \`${HEAD_REF}\` does not match allowed-head-prefixes"
+            exit 1
+          fi
+          echo "Releasing ${MERGE_SHA}, the merge of pull request #${NUMBER} (${HEAD_REF}) into ${BASE_BRANCH}."
+
       # The planner's rule (release_tags.check_tag_prefix), checked before
       # anything runs: the prefix names refs and REST paths below.
       - name: Require a valid tag prefix
@@ -258,6 +395,99 @@ jobs:
           paths: ${{ steps.scope.outputs.paths }}
           changelog-file: ${{ env.CHANGELOG_FILE }}
 
+      # changelog-verify: the expected file is built on the CHANGELOG of the
+      # release commit's first parent, which does not list the version yet,
+      # never on the merge commit or the base branch after it: those list it
+      # already, the planner keeps a listed section, and verify would compare
+      # the merged section with itself. The file is kept aside, in
+      # .release-verify, so nothing the release publishes reads it.
+      - name: Take the changelog of the release commit's first parent
+        id: changelog-base
+        if: ${{ inputs.changelog-verify && steps.plan.outputs.version != '' }}
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ inputs.package-dir }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PACKAGE_DIR}" ] || [ "${PACKAGE_DIR}" = "." ]; then
+            CHANGELOG_PATH="CHANGELOG.md"
+          else
+            CHANGELOG_PATH="${PACKAGE_DIR}/CHANGELOG.md"
+          fi
+          ASIDE=".release-verify"
+          BUILT="${ASIDE}/${CHANGELOG_PATH}"
+          if ! PARENT=$(git rev-parse --verify --quiet "${MERGE_SHA}^1^{commit}"); then
+            echo "release commit ${MERGE_SHA} has no first parent to build the expected changelog on"
+            exit 1
+          fi
+          rm -rf "${ASIDE}"
+          mkdir -p "$(dirname "${BUILT}")"
+          if git cat-file -e "${PARENT}:${CHANGELOG_PATH}" 2> /dev/null; then
+            git show "${PARENT}:${CHANGELOG_PATH}" > "${BUILT}"
+            while IFS= read -r LINE || [ -n "${LINE}" ]; do
+              if [[ "${LINE}" == "## [${VERSION}]"* ]]; then
+                echo "${CHANGELOG_PATH} already lists ${VERSION} at ${PARENT}, the first parent of ${MERGE_SHA}: the expected section would be the merged one, and nothing would be verified"
+                exit 1
+              fi
+            done < "${BUILT}"
+          fi
+          {
+            echo "changelog-file=${CHANGELOG_PATH}"
+            echo "built-file=${BUILT}"
+            echo "notes-file=${ASIDE}/notes.md"
+          } >> "$GITHUB_OUTPUT"
+
+      # The planner pinned above, run again on that file: the section it adds
+      # is the one the release commit must hold.
+      - name: Build the expected changelog on the first parent
+        id: changelog-build
+        if: ${{ inputs.changelog-verify && steps.plan.outputs.version != '' }}
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release@6d9dc866ee550148c7f49802f147cc11553d0726 # v1.13.4
+        with:
+          merge-sha: ${{ env.MERGE_SHA }}
+          repository-slug: ${{ github.repository }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          semantic-branch-config: ${{ inputs.semantic-branch-config }}
+          tag-prefix: ${{ inputs.tag-prefix }}
+          paths: ${{ steps.scope.outputs.paths }}
+          changelog-file: ${{ steps.changelog-base.outputs.built-file }}
+          notes-output: ${{ steps.changelog-base.outputs.notes-file }}
+
+      # Fails unless the release commit holds exactly that file, the heading
+      # date's value aside (commit-changelog's verify mode, v1.14.0).
+      - name: Verify the changelog of the release commit
+        id: verify-changelog
+        if: ${{ inputs.changelog-verify && steps.plan.outputs.version != '' }}
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release/commit-changelog@6cd8d478598e1f45dab1824b148de8c8d3742df6 # v1.14.0
+        with:
+          mode: verify
+          ref: ${{ env.MERGE_SHA }}
+          changelog-file: ${{ steps.changelog-base.outputs.changelog-file }}
+          built-file: ${{ steps.changelog-base.outputs.built-file }}
+          version: ${{ steps.plan.outputs.version }}
+          tag-prefix: ${{ inputs.tag-prefix }}
+          base-branch: ${{ inputs.base-branch }}
+          repository-slug: ${{ github.repository }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The App jobs run no third-party action, so the notes reach release-app
+      # as a job output, in base64, rather than as an artifact. GitHub caps a
+      # release body at 125000 characters and a job's outputs at 1 MB.
+      - name: Pass the release notes to the App jobs
+        id: notes
+        if: ${{ inputs.client-id != '' && steps.plan.outputs.version != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES_FILE="CHANGELOG_RELEASE.md"
+          SIZE=$(($(wc -c < "${NOTES_FILE}")))
+          if [ "${SIZE}" -gt 100000 ]; then
+            echo "${NOTES_FILE} holds ${SIZE} bytes, more than the 100000 a release body takes here"
+            exit 1
+          fi
+          echo "notes_b64=$(base64 < "${NOTES_FILE}" | tr -d '\n')" >> "$GITHUB_OUTPUT"
+
       # A scoped release whose paths no merged commit touched plans an empty
       # version; the planner says so in the step summary, and nothing follows.
       - name: Store release notes
@@ -283,7 +513,7 @@ jobs:
       # Before the build, because a version derived from the tag needs the tag to
       # exist. Idempotent, so a halted release can be re-run.
       - name: Create the immutable version tag
-        if: ${{ steps.plan.outputs.version != '' }}
+        if: ${{ inputs.client-id == '' && steps.plan.outputs.version != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.plan.outputs.version }}
@@ -314,9 +544,152 @@ jobs:
               -f sha="${MERGE_SHA}"
           fi
 
-  build:
+  # With an App: the immutable tag, before the build, which checks it out.
+  # No checkout and nothing but gh runs where the key is.
+  tag-app:
     needs: plan
-    if: ${{ inputs.build-distribution && needs.plan.outputs.version != '' }}
+    if: ${{ inputs.client-id != '' && needs.plan.outputs.version != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    # GITHUB_TOKEN is never used here: every write goes through the App token,
+    # minted with permission-contents: write only.
+    permissions: {}
+    # One release of a tag prefix writes at a time; GitHub cancels a pending
+    # one when another arrives, and the owner resumes it with merge-sha.
+    concurrency:
+      group: release-on-label-app-${{ github.repository }}-${{ inputs.tag-prefix }}
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_SHA: ${{ needs.plan.outputs.release_sha }}
+      TAG_PREFIX: ${{ inputs.tag-prefix }}
+    steps:
+      # First, before any token exists: a "re-run failed jobs" of this job
+      # by someone else fails here even when GitHub does not evaluate the
+      # caller's condition again. The list comes through the environment, and
+      # an empty one fails: these jobs only run with client-id.
+      - name: Require an allowed triggering actor
+        id: allowed-actors
+        shell: bash
+        env:
+          ALLOWED_ACTORS: ${{ inputs.allowed-actors }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          CHECKED=false
+          while IFS= read -r ACTOR; do
+            if [ -z "${ACTOR}" ]; then
+              continue
+            fi
+            CHECKED=true
+            if [ "${ACTOR}" = "${TRIGGERING_ACTOR}" ]; then
+              echo "triggering actor \`${TRIGGERING_ACTOR}\` is in allowed-actors"
+              exit 0
+            fi
+          done < <(tr -s ' \t\r' '\n' <<< "${ALLOWED_ACTORS}")
+          if [ "${CHECKED}" = "false" ]; then
+            echo "allowed-actors is empty: with client-id, name the logins that may release"
+            exit 1
+          fi
+          echo "triggering actor \`${TRIGGERING_ACTOR}\` is not in allowed-actors"
+          exit 1
+
+      - name: Validate the release inputs
+        id: inputs
+        shell: bash
+        env:
+          LC_ALL: C
+        run: |
+          set -euo pipefail
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "version '${VERSION}' is not a SemVer version"
+            exit 1
+          fi
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release commit '${RELEASE_SHA}' is not a full SHA"
+            exit 1
+          fi
+          if [[ ! "${TAG_PREFIX}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "tag prefix '${TAG_PREFIX}' is not allowed"
+            exit 1
+          fi
+          case "${TAG_PREFIX}" in
+            *..* | *//* | */.* | *.lock/*)
+              echo "tag prefix '${TAG_PREFIX}' holds a sequence git refuses in a ref name"
+              exit 1
+              ;;
+          esac
+
+      # The token's only repository, from GITHUB_REPOSITORY, which the runner
+      # sets, rather than from the event payload.
+      - name: Name the repository of the token
+        id: repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="${GITHUB_REPOSITORY#*/}"
+          if [ "${GITHUB_REPOSITORY}" != "${GITHUB_REPOSITORY%%/*}/${NAME}" ] || [[ ! "${NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "repository name \`${NAME}\` is not allowed"
+            exit 1
+          fi
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      # Right before the first write, for this repository only, with the one
+      # permission the job uses.
+      - name: Mint the App token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repo.outputs.name }}
+          permission-contents: write
+
+      # Idempotent, so a halted release can be resumed.
+      - name: Create the immutable version tag
+        id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "the App token is empty"
+            exit 1
+          fi
+          TAG="${TAG_PREFIX}${VERSION}"
+          TAG_REF="refs/tags/${TAG}"
+          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${TAG}")
+          TAG_COUNT=$(jq --arg ref "${TAG_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${TAGS}")
+
+          if [ "${TAG_COUNT}" -gt 1 ]; then
+            echo "GitHub returned duplicate exact refs for ${TAG_REF}."
+            exit 1
+          elif [ "${TAG_COUNT}" -eq 1 ]; then
+            REMOTE_SHA=$(jq -r --arg ref "${TAG_REF}" '.[] | select(.ref == $ref) | .object.sha' <<< "${TAGS}")
+            if [ "${REMOTE_SHA}" != "${RELEASE_SHA}" ]; then
+              echo "Tag ${TAG} points to ${REMOTE_SHA}, expected ${RELEASE_SHA}."
+              exit 1
+            fi
+            echo "Tag ${TAG} already points at the release commit."
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="${TAG_REF}" \
+              -f sha="${RELEASE_SHA}"
+          fi
+
+      - name: Summarise the tag
+        id: summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Tag ${TAG_PREFIX}${VERSION} -> ${RELEASE_SHA}" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: [plan, tag-app]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.tag-app.result == 'success' || needs.tag-app.result == 'skipped') && inputs.build-distribution && needs.plan.outputs.version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -403,7 +776,7 @@ jobs:
     needs: [plan, build]
     outputs:
       changelog-committed: ${{ steps.commit-changelog.outcome == 'success' }}
-    if: ${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure' && needs.plan.outputs.version != '' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') && needs.plan.outputs.version != '' && inputs.client-id == '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -492,3 +865,218 @@ jobs:
           MESSAGE="${TAG} is released, but ${CHANGELOG_FILE} was not committed to ${BASE_BRANCH}; see the step above. To add it, re-run all jobs of this run, or run the caller again with merge-sha: ${RELEASE_SHA}. The tag and the GitHub Release are kept, and the commit adds the release to the file as the branch holds it then. If ${BASE_BRANCH} only takes pull requests, let GITHUB_TOKEN bypass that rule, or commit the file by hand."
           echo "::warning title=Changelog not committed::${MESSAGE}"
           printf '%s\n' "${MESSAGE}" >> "$GITHUB_STEP_SUMMARY"
+
+  # With an App: the major tag, moved forward only, then the GitHub Release.
+  # Skipped unless tag-app succeeded, so a failed tag moves nothing.
+  release-app:
+    needs: [plan, tag-app, build]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.tag-app.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') && inputs.client-id != '' && needs.plan.outputs.version != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    # GITHUB_TOKEN is never used here: every write goes through the App token,
+    # minted with permission-contents: write only.
+    permissions: {}
+    # One release of a tag prefix writes at a time; GitHub cancels a pending
+    # one when another arrives, and the owner resumes it with merge-sha.
+    concurrency:
+      group: release-on-label-app-${{ github.repository }}-${{ inputs.tag-prefix }}
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_SHA: ${{ needs.plan.outputs.release_sha }}
+      TAG_PREFIX: ${{ inputs.tag-prefix }}
+      NOTES_B64: ${{ needs.plan.outputs.notes_b64 }}
+    steps:
+      # First, before any token exists: a "re-run failed jobs" of this job
+      # by someone else fails here even when GitHub does not evaluate the
+      # caller's condition again. The list comes through the environment, and
+      # an empty one fails: these jobs only run with client-id.
+      - name: Require an allowed triggering actor
+        id: allowed-actors
+        shell: bash
+        env:
+          ALLOWED_ACTORS: ${{ inputs.allowed-actors }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          CHECKED=false
+          while IFS= read -r ACTOR; do
+            if [ -z "${ACTOR}" ]; then
+              continue
+            fi
+            CHECKED=true
+            if [ "${ACTOR}" = "${TRIGGERING_ACTOR}" ]; then
+              echo "triggering actor \`${TRIGGERING_ACTOR}\` is in allowed-actors"
+              exit 0
+            fi
+          done < <(tr -s ' \t\r' '\n' <<< "${ALLOWED_ACTORS}")
+          if [ "${CHECKED}" = "false" ]; then
+            echo "allowed-actors is empty: with client-id, name the logins that may release"
+            exit 1
+          fi
+          echo "triggering actor \`${TRIGGERING_ACTOR}\` is not in allowed-actors"
+          exit 1
+
+      - name: Validate the release inputs
+        id: inputs
+        shell: bash
+        env:
+          LC_ALL: C
+        run: |
+          set -euo pipefail
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "version '${VERSION}' is not a SemVer version"
+            exit 1
+          fi
+          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release commit '${RELEASE_SHA}' is not a full SHA"
+            exit 1
+          fi
+          if [[ ! "${TAG_PREFIX}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "tag prefix '${TAG_PREFIX}' is not allowed"
+            exit 1
+          fi
+          case "${TAG_PREFIX}" in
+            *..* | *//* | */.* | *.lock/*)
+              echo "tag prefix '${TAG_PREFIX}' holds a sequence git refuses in a ref name"
+              exit 1
+              ;;
+          esac
+          if [[ ! "${NOTES_B64}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+            echo "the release notes are not one line of base64"
+            exit 1
+          fi
+
+      - name: Decode the release notes
+        id: decode
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d <<< "${NOTES_B64}" > "${RUNNER_TEMP}/release-notes.md"
+
+      # The token's only repository, from GITHUB_REPOSITORY, which the runner
+      # sets, rather than from the event payload.
+      - name: Name the repository of the token
+        id: repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="${GITHUB_REPOSITORY#*/}"
+          if [ "${GITHUB_REPOSITORY}" != "${GITHUB_REPOSITORY%%/*}/${NAME}" ] || [[ ! "${NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "repository name \`${NAME}\` is not allowed"
+            exit 1
+          fi
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      # Right before the first write, for this repository only, with the one
+      # permission the job uses.
+      - name: Mint the App token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.client-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repo.outputs.name }}
+          permission-contents: write
+
+      # Forward only: a later release may have moved it already.
+      - name: Move the floating major tag forward
+        id: major
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "the App token is empty"
+            exit 1
+          fi
+          MAJOR_TAG="${TAG_PREFIX}${VERSION%%.*}"
+          MAJOR_REF="refs/tags/${MAJOR_TAG}"
+          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${MAJOR_TAG}")
+          MAJOR_COUNT=$(jq --arg ref "${MAJOR_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${TAGS}")
+
+          if [ "${MAJOR_COUNT}" -gt 1 ]; then
+            echo "GitHub returned duplicate exact refs for ${MAJOR_REF}."
+            exit 1
+          elif [ "${MAJOR_COUNT}" -eq 0 ]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="${MAJOR_REF}" \
+              -f sha="${RELEASE_SHA}"
+            echo "Major tag ${MAJOR_TAG} -> ${RELEASE_SHA} (created)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          KIND=$(jq -r --arg ref "${MAJOR_REF}" '.[] | select(.ref == $ref) | .object.type' <<< "${TAGS}")
+          CURRENT=$(jq -r --arg ref "${MAJOR_REF}" '.[] | select(.ref == $ref) | .object.sha' <<< "${TAGS}")
+          if [ "${KIND}" != "commit" ]; then
+            echo "${MAJOR_TAG} is not a lightweight tag on a commit: move it by hand."
+            exit 1
+          fi
+          STATUS=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${CURRENT}...${RELEASE_SHA}" | jq -r .status)
+          case "${STATUS}" in
+            ahead)
+              # A fast-forward only: GitHub refuses it if the tag moved since.
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" \
+                -f sha="${RELEASE_SHA}" \
+                -F force=false
+              echo "Major tag ${MAJOR_TAG} -> ${RELEASE_SHA} (moved from ${CURRENT})" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            identical)
+              echo "Major tag ${MAJOR_TAG} already points at ${RELEASE_SHA}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            behind)
+              MESSAGE="${MAJOR_TAG} is kept at ${CURRENT}, a later commit than ${RELEASE_SHA}: a later release moved it."
+              echo "::warning title=Major tag kept::${MESSAGE}"
+              echo "${MESSAGE}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "${MAJOR_TAG} at ${CURRENT} and ${RELEASE_SHA} are ${STATUS}: the major tag only moves forward."
+              exit 1
+              ;;
+          esac
+
+      # On the tag tag-app created; a release that exists already is kept
+      # when its tag is the release commit's.
+      - name: Create the GitHub release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "the App token is empty"
+            exit 1
+          fi
+          TAG="${TAG_PREFIX}${VERSION}"
+          TAG_REF="refs/tags/${TAG}"
+          if RELEASE=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,isPrerelease,author); then
+            if ! jq -e '.isDraft == false and .isPrerelease == false' <<< "${RELEASE}" > /dev/null; then
+              echo "The GitHub release \`${TAG}\` exists as a draft or a prerelease: review it by hand."
+              exit 1
+            fi
+            AUTHOR=$(jq -r '.author.login // ""' <<< "${RELEASE}")
+            if [[ "${AUTHOR}" != *"[bot]" ]]; then
+              echo "The GitHub release \`${TAG}\` exists, created by \`${AUTHOR}\`, not by an App: review it by hand."
+              exit 1
+            fi
+            TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${TAG}")
+            REMOTE_SHA=$(jq -r --arg ref "${TAG_REF}" '[.[] | select(.ref == $ref) | .object.sha] | if length == 1 then .[0] else "" end' <<< "${TAGS}")
+            if [ "${REMOTE_SHA}" != "${RELEASE_SHA}" ]; then
+              echo "The GitHub release ${TAG} exists on a tag at '${REMOTE_SHA}', expected ${RELEASE_SHA}."
+              exit 1
+            fi
+            echo "The GitHub release ${TAG} already exists on the release commit."
+          else
+            gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
+              --title "${TAG}" --notes-file "${RUNNER_TEMP}/release-notes.md"
+          fi
+
+      - name: Summarise the release
+        id: summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GitHub release ${TAG_PREFIX}${VERSION} on ${RELEASE_SHA}" >> "$GITHUB_STEP_SUMMARY"

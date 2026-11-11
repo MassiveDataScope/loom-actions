@@ -1,0 +1,42 @@
+# A release through a GitHub App (contract L-b): pushed to master, relaunched
+# only by the owner with workflow_dispatch on master, never committing to the
+# base branch. The App's key lives in the `release` environment; the caller
+# passes the secret by name, never with `secrets: inherit`.
+name: release-app-token
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      merge_sha:
+        description: "Merge commit to release; run it on master"
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  release:
+    if: >-
+      ${{ github.ref == 'refs/heads/master'
+      && github.triggering_actor == 'the-reacher-data' }}
+    permissions:
+      contents: write
+      pull-requests: read
+    uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@0000000000000000000000000000000000000000
+    with:
+      package-dir: apps/control-plane
+      semantic-branch-config: apps/control-plane/pyproject.toml
+      tag-prefix: control-plane/v
+      scope-to-package: true
+      shared-paths: uv.lock
+      changelog: false
+      changelog-verify: true
+      merge-sha: ${{ inputs.merge_sha || github.sha }}
+      client-id: Iv23liwbMNi4rgvncO8E
+      environment: release
+      allowed-actors: the-reacher-data
+      allowed-head-prefixes: release/ hotfix/
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

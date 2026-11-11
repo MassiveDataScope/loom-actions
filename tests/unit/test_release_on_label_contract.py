@@ -48,7 +48,12 @@ class TestBuildingIsOptIn:
         assert publish["required"] is False
 
     def test_nothing_is_built_when_building_is_off(self) -> None:
-        assert _job("build")["if"].startswith("${{ inputs.build-distribution && ")
+        # 001-github-app L-b, contract Compatibilidad point 2: !cancelled() and the tag-app result.
+        assert _job("build")["if"] == (
+            "${{ !cancelled() && needs.plan.result == 'success'"
+            " && (needs.tag-app.result == 'success' || needs.tag-app.result == 'skipped')"
+            " && inputs.build-distribution && needs.plan.outputs.version != '' }}"
+        )
 
     def test_no_upload_happens_here(self) -> None:
         """PyPI's trusted publishing rejects a token minted for a reusable workflow."""

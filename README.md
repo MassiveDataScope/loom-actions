@@ -225,17 +225,29 @@ jobs:
 | `changelog` | `false` | keep `<package-dir>/CHANGELOG.md` in the Keep a Changelog 1.1.0 format, commit it to `base-branch` and use the new section as the GitHub Release body |
 | `python-version`, `uv-version` | `3.11`, `0.10.2` | toolchain of the build |
 | `merge-sha` | empty | commit to release, to resume a run that stopped halfway |
+| `client-id` | empty | client ID of a GitHub App: the tag, the major tag and the GitHub Release are written with an App token instead of `GITHUB_TOKEN`; see [Releasing through a GitHub App](#releasing-through-a-github-app) |
+| `environment` | empty | with `client-id`, required: the environment of the jobs that mint the App token, holding `APP_PRIVATE_KEY` |
+| `changelog-verify` | `false` | when a version is planned, fail before any write unless `<package-dir>/CHANGELOG.md` at the release commit holds exactly the section the planner builds on the file of its first parent |
+| `allowed-actors` | empty | with `client-id`, required: logins separated by spaces or newlines; the jobs that mint the App token fail first unless `github.triggering_actor` is one of them, and fail when the list is empty. Without `client-id` it is not read |
+| `allowed-head-prefixes` | empty | with `client-id`, branch prefixes separated by spaces or newlines, such as `release/ hotfix/`; the released pull request's head must start with one. Empty checks nothing |
+
+| Secret | Effect |
+|---|---|
+| `APP_PRIVATE_KEY` | optional; with `client-id`, the App's private key, passed by name (never `secrets: inherit`) |
 
 | Output | Value |
 |---|---|
 | `version` | the version released, `X.Y.Z`; empty when nothing was released |
 | `distribution-built` | `true` once the distributions were built, checked and stored; `false` otherwise |
 | `changelog-committed` | `true` when `base-branch` holds the changelog with the release, committed by this run or already; `false` without `changelog`, or when the commit failed after the release was published |
+| `release-sha` | the commit the release was cut from |
 
 - The planner (`actions/release/plan-release`) and its `commit-changelog` composite are
   pinned by the commit of a release, so a caller's SHA pin on this workflow also fixes the
   planner it runs. Both pins point at the v1.13.4 release, which holds the `paths`
   input, the `commit-changelog` composite this workflow uses and the squash-merge fallback.
+  `changelog-verify` alone runs `commit-changelog` from the v1.14.0 release, the first with
+  its `verify` mode.
 - The workflow passes `tag-prefix` (`v` by default) to the planner it pins (v1.13.4), which
   reads only the tags `<prefix>X.Y.Z` to find the last release and write the notes, so a
   monorepo package released as `control-plane/v0.1.0` never plans from another package's
@@ -328,6 +340,105 @@ the contents API as `docs(release): changelog for <prefix>X.Y.Z`.
 - The entries come from the same commits as the version: every commit since the last
   `<prefix>` tag, or, with `scope-to-package`, only those touching `package-dir` or one of
   the `shared-paths`.
+
+#### Releasing through a GitHub App
+
+With `client-id`, nothing is written with `GITHUB_TOKEN`. The jobs `tag-app` and
+`release-app` run in `environment` with `permissions: {}` for `GITHUB_TOKEN`, check the
+triggering actor, mint a token of the App for
+this repository with `contents: write` only, right before their first write, and run nothing
+but `gh`: no checkout and no action but `actions/create-github-app-token`, pinned by its
+commit. `tag-app` creates the tag before the build; `release-app` moves the major tag and
+creates the GitHub Release on that tag (`gh release create --verify-tag`). Without
+`client-id` both jobs are skipped and the release is the one it always was.
+
+```yaml
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      merge_sha:
+        description: "Merge commit to release; run it on master"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  release:
+    # Only on master, and only for whoever may release. No event_name check:
+    # a re-run keeps the event of the run it re-runs.
+    if: ${{ github.ref == 'refs/heads/master' && github.triggering_actor == 'owner-login' }}
+    permissions:
+      contents: write
+      pull-requests: read
+    uses: MassiveDataScope/loom-actions/.github/workflows/release-on-label.yml@<sha> # vX.Y.Z
+    with:
+      package-dir: apps/control-plane
+      semantic-branch-config: apps/control-plane/pyproject.toml
+      tag-prefix: control-plane/v
+      scope-to-package: true
+      changelog: false # the App path never commits to the base branch
+      changelog-verify: true # the section is committed on the release branch instead
+      merge-sha: ${{ inputs.merge_sha || github.sha }}
+      client-id: Iv23liExample
+      environment: release
+      allowed-actors: owner-login
+      allowed-head-prefixes: release/ hotfix/
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }} # by name, never secrets: inherit
+```
+
+- **Trigger on `push` to the base branch.** A job started by `pull_request: closed` runs on
+  `refs/pull/N/merge`, and an environment limited to the base branch refuses it, so the key
+  never reaches it. Pass `merge-sha: ${{ inputs.merge_sha || github.sha }}`.
+- **`push` without `client-id` is not supported.** Only the App path checks the pull request
+  of a pushed commit; without it every push to the base branch would plan a release. Callers
+  without an App keep `pull_request: closed`.
+- **Relaunch with `workflow_dispatch` on the base branch** (`gh workflow run <file> --ref
+  master -f merge_sha=<sha>`): run from another branch, the environment refuses it. Every
+  write is idempotent, so a relaunch finishes a halted release.
+- **Pass `APP_PRIVATE_KEY` by name, never with `secrets: inherit`**, which hands the called
+  workflow every secret of the repository. The caller's job has no environment, so the value
+  is empty there; the jobs of this workflow that declare `environment` resolve it.
+- **Set `environment` and `allowed-actors`**: with `client-id`, the plan fails without
+  `environment`, and `tag-app` and `release-app` fail on an empty `allowed-actors`. A re-run
+  keeps the `github.event_name` of the run it re-runs, and "re-run failed jobs" may start
+  `tag-app` or `release-app` again without the caller's `if` being evaluated anew; the first
+  step of each checks `github.triggering_actor` against the list, exactly and
+  case-sensitively, before any token exists.
+- The token is minted for one repository, named from `GITHUB_REPOSITORY`, never from the
+  event payload, with `contents: write` only; the jobs give `GITHUB_TOKEN` nothing.
+- `changelog: true` with `client-id` fails the plan before any API call: commit the
+  `CHANGELOG.md` section on the release branch and set `changelog-verify`.
+- First of all, `plan` finds the pull request of the release commit
+  (`commits/{sha}/pulls`, merged, with that merge commit, into `base-branch`). It must be the
+  only one, carry `release-label`, come from a branch of this repository (not a fork, nor a
+  deleted one) and, with `allowed-head-prefixes`, from a branch starting with one of them;
+  otherwise the plan fails, each case with its own message. GitHub
+  may map a fresh merge commit to its pull request a little later, so finding none is
+  retried, five attempts over 50 seconds; anything else fails at once.
+- With `changelog-verify`, the expected file is built by the pinned planner on the
+  `CHANGELOG.md` of the release commit's first parent, which must not list the version yet,
+  and `commit-changelog`'s `verify` mode compares it with the file of the release commit.
+  Built on the merge commit itself, the section would be compared with itself.
+- `changelog-verify` assumes merge-commit or squash merges, where the first parent of the
+  release commit is the base branch before the pull request. A rebase merge puts the pull
+  request's own commits on the base: when the commit before the last already lists the
+  version, the plan fails closed; when it does not, the earlier commits of the pull request
+  count as the base, and a change they make elsewhere in the file is not checked. Merge
+  with a merge commit or a squash.
+- The major tag only moves forward, as a fast-forward update (`force=false`): when a later
+  release already moved it past this one, it is kept, with a warning, and the GitHub Release
+  is still created; a major tag that diverged from the release commit fails the job. A
+  GitHub Release that already exists for the tag is kept only when it is published, not a
+  prerelease, created by an App (`author.login` ending in `[bot]`) and on the release
+  commit; anything else fails for a person to review. If `tag-app` fails, `release-app` is skipped and the
+  major tag stays where it was.
+- `tag-app` and `release-app` share a concurrency group per repository and tag prefix,
+  without cancelling a running job. GitHub cancels a *pending* run of the group when another
+  arrives; relaunch it with `workflow_dispatch` and its `merge_sha`.
 
 #### Previewing the release on a pull request
 

@@ -1,0 +1,494 @@
+name: release-on-label
+
+# Merging a pull request that carries the release label releases everything
+# merged since the last tag: the plan, the tag, the notes and the GitHub
+# release. Building a distribution is opt-in.
+#
+# Uploading it is NOT done here. PyPI's trusted publishing does not support
+# reusable workflows — the OIDC claim names this file, not the caller's — so the
+# caller publishes the artifact this workflow leaves behind. See PUBLISHING.md.
+on:
+  workflow_call:
+    inputs:
+      release-label:
+        description: "Label that authorises a release when its pull request merges"
+        required: false
+        type: string
+        default: "release"
+      base-branch:
+        description: "Branch the release is cut from"
+        required: false
+        type: string
+        default: "master"
+      build-distribution:
+        description: "Build a distribution for the caller to publish"
+        required: false
+        type: boolean
+        default: false
+      package-name:
+        description: "Distribution name, required when building, to check the built version"
+        required: false
+        type: string
+        default: ""
+      python-version:
+        required: false
+        type: string
+        default: "3.11"
+      uv-version:
+        required: false
+        type: string
+        default: "0.10.2"
+      merge-sha:
+        description: "Commit to release, for a caller resuming a run that stopped halfway"
+        required: false
+        type: string
+        default: ""
+      package-dir:
+        description: >-
+          Directory of the package to build, relative to the repository root and without a
+          trailing slash; it holds pyproject.toml and uv.lock. The lock check, the build and
+          the wheel name check run there. Defaults to the root itself
+        required: false
+        type: string
+        default: "."
+      semantic-branch-config:
+        description: >-
+          TOML file declaring [tool.semantic_branch] that decides the version, relative to
+          the repository root. A monorepo passes the pyproject.toml of the package it releases
+        required: false
+        type: string
+        default: "pyproject.toml"
+      check-distribution:
+        description: "Check the built distributions with twine check --strict before storing them"
+        required: false
+        type: boolean
+        default: false
+      tag-prefix:
+        description: >-
+          Prefix of the release tags, before the version: v1.2.3 by default. A monorepo
+          package that releases on its own passes its own, such as control-plane/v for
+          control-plane/v0.1.0 and the major tag control-plane/v0. Letters, digits, ".", "_",
+          "-" and "/" only, starting with a letter or a digit
+        required: false
+        type: string
+        default: "v"
+      scope-to-package:
+        description: >-
+          Ship only the commits touching package-dir, which must not be the root, or one of
+          shared-paths: they decide the version and fill the changelog and the notes, so
+          another package's pull requests never reach this one, and a labelled merge touching
+          none of them releases nothing. False, the default, ships every commit whatever
+          package-dir is, as before: a package built from files outside package-dir, such as
+          an image built from the root, keeps it false
+        required: false
+        type: boolean
+        default: false
+      shared-paths:
+        description: >-
+          With scope-to-package, the paths the package shares with the others, relative to
+          the repository root and separated by newlines or commas, such as uv.lock. Refused
+          without scope-to-package
+        required: false
+        type: string
+        default: ""
+      changelog:
+        description: >-
+          Keep <package-dir>/CHANGELOG.md (Keep a Changelog 1.1.0) and commit it to the base
+          branch: the planner adds the release, one entry per merged pull request title, and
+          the GitHub Release body is that new section. The base branch must accept a commit
+          from GITHUB_TOKEN through the contents API. False keeps the notes as before
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: >-
+          Version the release published; empty when scope-to-package found no commit
+          touching the package since its last tag, and nothing was released
+        value: ${{ jobs.plan.outputs.version }}
+      distribution-built:
+        description: "Whether a distribution was built and left as an artifact"
+        value: ${{ jobs.build.outputs.built == 'true' }}
+      changelog-committed:
+        description: >-
+          Whether the base branch holds the changelog with the release, committed by this
+          run or already; false without changelog, or when the commit failed after the
+          release was published, which the run reports as a warning
+        value: ${{ jobs.release.outputs.changelog-committed == 'true' }}
+
+jobs:
+  plan:
+    if: >-
+      ${{ inputs.merge-sha != ''
+          || (github.event.pull_request.merged == true
+              && contains(github.event.pull_request.labels.*.name, inputs.release-label)) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # The planner maps each merged commit to its pull request
+      # (commits/{sha}/pulls); a private repository needs this to read it.
+      pull-requests: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      release_sha: ${{ env.MERGE_SHA }}
+      changelog_file: ${{ env.CHANGELOG_FILE }}
+      artifact_suffix: ${{ steps.artifacts.outputs.suffix }}
+    env:
+      MERGE_SHA: ${{ inputs.merge-sha != '' && inputs.merge-sha || github.event.pull_request.merge_commit_sha }}
+      # Empty unless the caller keeps a changelog; the planner then touches no file.
+      CHANGELOG_FILE: ${{ inputs.changelog && (inputs.package-dir == '.' && 'CHANGELOG.md' || format('{0}/CHANGELOG.md', inputs.package-dir)) || '' }}
+    steps:
+      # The planner's rule (release_tags.check_tag_prefix), checked before
+      # anything runs: the prefix names refs and REST paths below.
+      - name: Require a valid tag prefix
+        shell: bash
+        env:
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          LC_ALL: C
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG_PREFIX}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "tag prefix '${TAG_PREFIX}' is not allowed: start with a letter or a digit and use only letters, digits, '.', '_', '-' and '/'"
+            exit 1
+          fi
+          case "${TAG_PREFIX}" in
+            *..* | *//* | */.* | *.lock/*)
+              echo "tag prefix '${TAG_PREFIX}' holds a sequence git refuses in a ref name"
+              exit 1
+              ;;
+          esac
+
+      # A caller releasing two packages in one run gets one set of artifacts
+      # each; an artifact name may not hold "/", the only such character a
+      # checked prefix can.
+      - name: Name the artifacts of the release
+        id: artifacts
+        shell: bash
+        env:
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        run: |
+          set -euo pipefail
+          echo "suffix=${TAG_PREFIX//\//-}" >> "$GITHUB_OUTPUT"
+
+      # It names the working directory of the build and the changelog file:
+      # apps/api/ or apps//api would name apps/api//CHANGELOG.md.
+      - name: Require a valid package directory
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ inputs.package-dir }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PACKAGE_DIR}" ] && [[ ! "${PACKAGE_DIR}" =~ ^[^/]+(/[^/]+)*$ ]]; then
+            echo "package-dir '${PACKAGE_DIR}' is not allowed: name a directory relative to the root, without a leading or trailing '/' or an empty segment, such as apps/api, or '.' for the root"
+            exit 1
+          fi
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.base-branch }}
+          persist-credentials: false
+
+      - name: Require the release commit on the base branch
+        shell: bash
+        env:
+          BASE_BRANCH: ${{ inputs.base-branch }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${MERGE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release commit is not a full SHA: ${MERGE_SHA}"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${MERGE_SHA}" "origin/${BASE_BRANCH}"; then
+            echo "Release commit ${MERGE_SHA} is not on ${BASE_BRANCH}."
+            exit 1
+          fi
+
+      - name: Require a package name when building
+        if: ${{ inputs.build-distribution && inputs.package-name == '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "build-distribution needs package-name to check the built version against the tag."
+          exit 1
+
+      # Opt-in: with scope-to-package a package of a monorepo ships only the
+      # commits touching its directory and the paths it shares. Otherwise no
+      # path is passed and every commit ships, whatever package-dir is. One
+      # line, so no input can write another output; the planner checks each
+      # path before reading git.
+      - name: Scope the release to the package
+        id: scope
+        shell: bash
+        env:
+          PACKAGE_DIR: ${{ inputs.package-dir }}
+          SHARED_PATHS: ${{ inputs.shared-paths }}
+          SCOPE_TO_PACKAGE: ${{ inputs.scope-to-package }}
+        run: |
+          set -euo pipefail
+          PATHS=""
+          if [ "${SCOPE_TO_PACKAGE}" = "true" ]; then
+            if [ -z "${PACKAGE_DIR}" ] || [ "${PACKAGE_DIR}" = "." ]; then
+              echo "scope-to-package needs a package-dir other than the root: the root package ships every commit"
+              exit 1
+            fi
+            PATHS="${PACKAGE_DIR}${SHARED_PATHS:+,${SHARED_PATHS}}"
+          elif [ -n "${SHARED_PATHS}" ]; then
+            echo "shared-paths is read only with scope-to-package: true; set it, or drop shared-paths"
+            exit 1
+          fi
+          PATHS="${PATHS//$'\r'/}"
+          echo "paths=${PATHS//$'\n'/,}" >> "$GITHUB_OUTPUT"
+
+      # Pinned by the commit of a release, not by the floating major tag: a
+      # reusable workflow cannot use a path-relative action, and the caller's SHA
+      # pin would otherwise mean nothing while this reference moved with every
+      # release. The pinned release holds the planner the paths and changelog inputs
+      # need, the commit-changelog composite pinned below and plan-release/preview,
+      # so a caller pinned to it previews with the planner it releases with.
+      - name: Plan the release
+        id: plan
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release@6d9dc866ee550148c7f49802f147cc11553d0726 # v1.13.4
+        with:
+          merge-sha: ${{ env.MERGE_SHA }}
+          repository-slug: ${{ github.repository }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          semantic-branch-config: ${{ inputs.semantic-branch-config }}
+          tag-prefix: ${{ inputs.tag-prefix }}
+          paths: ${{ steps.scope.outputs.paths }}
+          changelog-file: ${{ env.CHANGELOG_FILE }}
+
+      # A scoped release whose paths no merged commit touched plans an empty
+      # version; the planner says so in the step summary, and nothing follows.
+      - name: Store release notes
+        if: ${{ steps.plan.outputs.version != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-notes-${{ steps.artifacts.outputs.suffix }}
+          path: CHANGELOG_RELEASE.md
+          if-no-files-found: error
+          retention-days: 1
+
+      # The file the planner built on the head of the base branch checked out
+      # above, holding the release; the release job commits it once published.
+      - name: Store the changelog
+        if: ${{ inputs.changelog && steps.plan.outputs.version != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: changelog-${{ steps.artifacts.outputs.suffix }}
+          path: ${{ env.CHANGELOG_FILE }}
+          if-no-files-found: error
+          retention-days: 1
+
+      # Before the build, because a version derived from the tag needs the tag to
+      # exist. Idempotent, so a halted release can be re-run.
+      - name: Create the immutable version tag
+        if: ${{ steps.plan.outputs.version != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${TAG_PREFIX}${VERSION}"
+          TAG_REF="refs/tags/${TAG}"
+          # A "/" in the tag stays a literal path separator, as in the url GitHub
+          # returns for such a ref (.../git/refs/tags/gopls/v0.14.0 in golang/tools).
+          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${TAG}")
+          TAG_COUNT=$(jq --arg ref "${TAG_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${TAGS}")
+
+          if [ "${TAG_COUNT}" -gt 1 ]; then
+            echo "GitHub returned duplicate exact refs for ${TAG_REF}."
+            exit 1
+          elif [ "${TAG_COUNT}" -eq 1 ]; then
+            REMOTE_SHA=$(jq -r --arg ref "${TAG_REF}" '.[] | select(.ref == $ref) | .object.sha' <<< "${TAGS}")
+            if [ "${REMOTE_SHA}" != "${MERGE_SHA}" ]; then
+              echo "Tag ${TAG} points to ${REMOTE_SHA}, expected ${MERGE_SHA}."
+              exit 1
+            fi
+            echo "Tag ${TAG} already points at the release commit."
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="${TAG_REF}" \
+              -f sha="${MERGE_SHA}"
+          fi
+
+  build:
+    needs: plan
+    if: ${{ inputs.build-distribution && needs.plan.outputs.version != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      built: ${{ steps.built.outputs.built }}
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      PACKAGE_NAME: ${{ inputs.package-name }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install pinned uv
+        shell: bash
+        env:
+          UV_VERSION: ${{ inputs.uv-version }}
+        run: |
+          pip install --only-binary :all: "uv==${UV_VERSION}"
+
+      - name: Build package
+        shell: bash
+        working-directory: ${{ inputs.package-dir }}
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv run --frozen --with "build==1.3.0" python -m build
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "Package build modified tracked files."
+            git status --short --untracked-files=no
+            exit 1
+          fi
+
+      # A version other than the tag's means the build never saw the tag, and
+      # publishing it would burn a version on an immutable index.
+      - name: Require the built version to match the tag
+        shell: bash
+        working-directory: ${{ inputs.package-dir }}
+        run: |
+          set -euo pipefail
+          normalised="${PACKAGE_NAME//-/_}"
+          if [ ! -f "dist/${normalised}-${VERSION}-py3-none-any.whl" ]; then
+            echo "Built distributions do not carry version ${VERSION}:"
+            ls -1 dist
+            exit 1
+          fi
+
+      - name: Check the distributions
+        if: ${{ inputs.check-distribution }}
+        shell: bash
+        working-directory: ${{ inputs.package-dir }}
+        env:
+          TWINE_VERSION: "7.0.0"
+        run: |
+          set -euo pipefail
+          uv tool run --from "twine==${TWINE_VERSION}" twine check --strict dist/*
+
+      # upload-artifact does not honour working-directory; the root package keeps
+      # the path it always had.
+      - name: Store distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: distributions
+          path: ${{ inputs.package-dir == '.' && 'dist/' || format('{0}/dist/', inputs.package-dir) }}
+          if-no-files-found: error
+          retention-days: 1
+
+      # The last step, so it only reports a distribution once every check passed
+      # and the artifact exists.
+      - name: Report the distribution
+        id: built
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: [plan, build]
+    outputs:
+      changelog-committed: ${{ steps.commit-changelog.outcome == 'success' }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure' && needs.plan.outputs.version != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_SHA: ${{ needs.plan.outputs.release_sha }}
+    steps:
+      - name: Download release notes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-notes-${{ needs.plan.outputs.artifact_suffix }}
+
+      - name: Update floating major tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAJOR_TAG="${TAG_PREFIX}${VERSION%%.*}"
+          MAJOR_REF="refs/tags/${MAJOR_TAG}"
+          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${MAJOR_TAG}")
+          MAJOR_COUNT=$(jq --arg ref "${MAJOR_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${TAGS}")
+
+          if [ "${MAJOR_COUNT}" -gt 1 ]; then
+            echo "GitHub returned duplicate exact refs for ${MAJOR_REF}."
+            exit 1
+          elif [ "${MAJOR_COUNT}" -eq 1 ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" \
+              -f sha="${RELEASE_SHA}" \
+              -F force=true
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="${MAJOR_REF}" \
+              -f sha="${RELEASE_SHA}"
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
+        with:
+          tag_name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
+          name: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
+          body_path: CHANGELOG_RELEASE.md
+
+      # Last, so the file never lists a release that was not published. The tag
+      # and the release exist by now, so neither step can fail the run: a
+      # failure is the warning below. Re-running all jobs plans again on the
+      # base branch as it is then; the commit finds the version listed, or adds it.
+      - name: Download the changelog
+        id: download-changelog
+        if: ${{ inputs.changelog }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: changelog-${{ needs.plan.outputs.artifact_suffix }}
+          path: changelog
+
+      # Through the contents API, so the commit needs no checkout and no
+      # persisted credential, and GitHub signs it. The composite reads the file
+      # on the branch again and adds the release on top, retrying a 409, so a
+      # change made since the plan is kept. The commit changes only
+      # CHANGELOG.md, which the planner passes over in the next release's range.
+      - name: Commit the changelog
+        id: commit-changelog
+        if: ${{ inputs.changelog && steps.download-changelog.outcome == 'success' }}
+        continue-on-error: true
+        uses: MassiveDataScope/loom-actions/actions/release/plan-release/commit-changelog@6d9dc866ee550148c7f49802f147cc11553d0726 # v1.13.4
+        with:
+          changelog-file: ${{ needs.plan.outputs.changelog_file }}
+          built-file: changelog/CHANGELOG.md
+          version: ${{ needs.plan.outputs.version }}
+          tag-prefix: ${{ inputs.tag-prefix }}
+          base-branch: ${{ inputs.base-branch }}
+          repository-slug: ${{ github.repository }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warn that the changelog was not committed
+        if: ${{ inputs.changelog && (steps.download-changelog.outcome == 'failure' || steps.commit-changelog.outcome == 'failure') }}
+        shell: bash
+        env:
+          CHANGELOG_FILE: ${{ needs.plan.outputs.changelog_file }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+          TAG: ${{ inputs.tag-prefix }}${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          MESSAGE="${TAG} is released, but ${CHANGELOG_FILE} was not committed to ${BASE_BRANCH}; see the step above. To add it, re-run all jobs of this run, or run the caller again with merge-sha: ${RELEASE_SHA}. The tag and the GitHub Release are kept, and the commit adds the release to the file as the branch holds it then. If ${BASE_BRANCH} only takes pull requests, let GITHUB_TOKEN bypass that rule, or commit the file by hand."
+          echo "::warning title=Changelog not committed::${MESSAGE}"
+          printf '%s\n' "${MESSAGE}" >> "$GITHUB_STEP_SUMMARY"

@@ -165,6 +165,9 @@ class TestTheStep:
 # release when both run the same plan-release source, so any src/ file that
 # differs from this pin must be listed below.
 RELEASED_PLANNER = "6d9dc866ee550148c7f49802f147cc11553d0726"
+# v1.14.0, the commit-changelog verify mode release-on-label's changelog-verify runs.
+VERIFY_PIN = "6cd8d478598e1f45dab1824b148de8c8d3742df6"
+PLAN_RELEASE = "MassiveDataScope/loom-actions/actions/release/plan-release"
 # src/ files that differ from the pinned planner. commit_changelog.py gained the
 # render and verify modes; the preview never runs it, so it still matches the release.
 DIVERGED_SINCE_PIN: set[str] = {"commit_changelog.py"}
@@ -178,7 +181,13 @@ class TestThePlannerTheReleaseRuns:
             if "plan-release" in s.get("uses", "")
         ]
         assert uses
-        assert {use.split("@")[1].split()[0] for use in uses} == {RELEASED_PLANNER}
+        # 001-github-app L-b, contract Compatibilidad point 6: verify-changelog adds the one
+        # pin of commit-changelog's verify mode; every other use is the documented planner.
+        verify = [use for use in uses if use.endswith(f"/commit-changelog@{VERIFY_PIN}")]
+        assert verify == [f"{PLAN_RELEASE}/commit-changelog@{VERIFY_PIN}"]
+        rest = [use for use in uses if use not in verify]
+        assert rest
+        assert {use.split("@")[1].split()[0] for use in rest} == {RELEASED_PLANNER}
 
     def test_only_the_documented_files_differ_from_the_pinned_planner(self) -> None:
         source = "actions/release/plan-release/src"

@@ -76,8 +76,14 @@ class TestTheDefaultIsUnchanged:
     def test_the_steps_a_caller_ran_keep_their_order(self) -> None:
         plan = [t for t in _titles("plan") if t != UPLOAD]
         release = [t for t in _titles("release") if t not in (DOWNLOAD, COMMIT, WARN)]
-        assert plan[-3:] == [
+        # 001-github-app L-b, contract Compatibilidad point 6: the new steps follow the
+        # planner, before the notes upload and the tag.
+        assert plan[-7:] == [
             "Plan the release",
+            "Take the changelog of the release commit's first parent",
+            "Build the expected changelog on the first parent",
+            "Verify the changelog of the release commit",
+            "Pass the release notes to the App jobs",
             "Store release notes",
             "Create the immutable version tag",
         ]
@@ -93,9 +99,14 @@ class TestTheDefaultIsUnchanged:
 
     def test_the_jobs_and_their_permissions_are_the_same(self) -> None:
         jobs = wf.jobs(NAME)
-        assert list(jobs) == ["plan", "build", "release"]
+        # 001-github-app L-b, contract Compatibilidad point 1: two App jobs, which give
+        # GITHUB_TOKEN nothing.
+        assert list(jobs) == ["plan", "tag-app", "build", "release", "release-app"]
         assert jobs["plan"]["permissions"] == {"contents": "write", "pull-requests": "read"}
+        assert jobs["build"]["permissions"] == {"contents": "read"}
         assert jobs["release"]["permissions"] == {"contents": "write"}
+        assert jobs["tag-app"]["permissions"] == {}
+        assert jobs["release-app"]["permissions"] == {}
 
 
 class TestTheOrder:

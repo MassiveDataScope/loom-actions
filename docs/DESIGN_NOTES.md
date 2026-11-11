@@ -115,6 +115,83 @@ It must never come from the merge commit, from the pull request's head or merge 
 from the base branch after the merge. All of those already hold the section, so `verify`
 would compare the section with itself and always pass.
 
+## release-on-label: an opt-in GitHub App path that never writes with `GITHUB_TOKEN`
+
+A caller whose base branch only a person may write, and whose releases must not be made by
+`GITHUB_TOKEN`, passes `client-id`. Without it nothing a caller runs changes; with it:
+
+- `plan` gains five steps, each skipped unless its first condition holds, so a caller
+  without `client-id` and without `changelog-verify` skips them all:
+  - `resolve-pr`, the first step, with the plan's own token: the merged pull request of
+    the release commit (`commits/{sha}/pulls`), which must be the only one, carry the
+    release label, come from a branch of this repository and, with
+    `allowed-head-prefixes`, from one of those prefixes. Only "none found" retries,
+    because GitHub maps a fresh merge commit to its pull request a little later. It also
+    fails, before any call, on `changelog: true` and on an empty `environment`;
+  - `changelog-base` and `changelog-build` (with `changelog-verify`): the pinned planner
+    run again on the `CHANGELOG.md` of the release commit's first parent, which must not
+    list the version yet (see the commit-changelog note above);
+  - `verify-changelog`: `commit-changelog`'s `verify` mode, from v1.14.0, the one new pin;
+  - `notes`: the release notes as a base64 job output, because the App jobs download no
+    artifact.
+- Two jobs, `tag-app` and `release-app`, do every write. They run in the caller's
+  `environment`, with `permissions: {}`: `GITHUB_TOKEN` gets nothing, since every write
+  goes through the App token. Each checks `github.triggering_actor` against
+  `allowed-actors` first, names the repository from `GITHUB_REPOSITORY`, and mints a token
+  for that one repository with `contents: write` only, right before the first write. They
+  run no checkout, no repository code and no action but `create-github-app-token`, pinned
+  by its commit.
+- The floating major tag only moves forward. `compare` decides: `ahead` moves it, with a
+  fast-forward update; `identical` leaves it; `behind`, because a later release moved it
+  already, keeps it with a warning and still creates the GitHub Release; `diverged` fails.
+  A GitHub Release that already exists is kept only when it is published, created by an
+  App and on the release commit. If `tag-app` fails, `release-app` is skipped.
+
+The token is minted inside the reusable workflow. The caller cannot mint it and pass it
+in: a token passed as an input or a secret would live for the whole run, reach jobs that
+run the caller's code, and have to cover the build too. Minted inside, it exists only in
+the two jobs that write, which run nothing but `gh`. The App's key is passed explicitly by
+name (`secrets: APP_PRIVATE_KEY`), never with `secrets: inherit`, which would hand over
+every secret of the repository; the jobs' `environment` resolves its value.
+
+`allowed-actors` and `allowed-head-prefixes` are inputs because loom-actions carries no
+branch convention and no login. GitFlow's `release/` and `hotfix/`, and who may release,
+belong to the caller. The actor check sits inside each job that mints, so a "re-run failed
+jobs" by someone else fails before any token exists, even when GitHub does not evaluate
+the caller's condition again. A re-run keeps the original `event_name`, so the caller
+cannot rely on that either.
+
+Compatibility. Without `client-id`, the steps of `plan`, `build` and `release` keep their
+`uses`, `with`, `run` and order (tested against v1.13.6, `f7962d31`). `build` and `release`
+now wait with `!cancelled()` instead of the implicit `success()` and `always()`, and accept
+a `success` or `skipped` dependency instead of "not `failure`". Those differ only when
+something is cancelled:
+
+> La única diferencia observable sin App es que, si se cancela la ejecución (incluido un
+> `build` cancelado por timeout), `release` ya no corre.
+
+That is: without an App, the only observable difference is that if the run is cancelled
+(including a `build` cancelled by its timeout), `release` no longer runs.
+
+Refused:
+
+- A trigger input, or branches on `github.event_name` in `plan`'s condition. Either
+  would change `plan`'s condition for every caller. The App path instead requires a `push`
+  to the base branch, which reaches the existing `merge-sha` branch of that condition: a
+  job started by `pull_request: closed` runs on `refs/pull/N/merge`, and an environment
+  limited to the base branch refuses it.
+- Enforcing "no `push` without `client-id`" in the workflow. It would add a step that runs
+  for every caller without an App. It is documented instead.
+- Minting in the caller (see above), and one token for `plan`, the tag and the release.
+- Moving the major tag after the GitHub Release, or creating the Release before the tag
+  is checked: the order is the tag, then the major tag, then the Release.
+- `contents: write` on the App jobs: `GITHUB_TOKEN` is never used there.
+- A workflow-level `concurrency`. It would cancel a pending run silently. The App jobs
+  share a group per repository and tag prefix, `cancel-in-progress: false`, and a pending
+  run GitHub cancels is relaunched with `merge_sha`; every write is idempotent.
+- Building the expected changelog on the merge commit, or on the base branch after the
+  merge (see the commit-changelog note).
+
 ## What cannot be tested here
 
 These are exercised by a real release and by nothing else. They are listed so nobody reads
