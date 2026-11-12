@@ -1,3 +1,20 @@
+# 🚀 Release 1.15.0 ([#95](https://github.com/MassiveDataScope/loom-actions/pull/95)) ([`d24b1ba`](https://github.com/MassiveDataScope/loom-actions/commit/d24b1ba2e456c7908ffd96a5a882213518234992))
+
+
+## ✨ Features
+### release-on-label
+- **release-on-label:** opt-in GitHub App path that never writes with GITHUB_TOKEN
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.14.0 ([#93](https://github.com/MassiveDataScope/loom-actions/pull/93)) ([`2beb232`](https://github.com/MassiveDataScope/loom-actions/commit/2beb232d583700472a996b5238b7319b759abc24))
 
 
