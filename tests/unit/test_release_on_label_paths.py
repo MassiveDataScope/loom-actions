@@ -141,16 +141,37 @@ class TestNothingToRelease:
     run is green.
     """
 
-    @pytest.mark.parametrize("title", ["Store release notes", "Create the immutable version tag"])
-    def test_the_plan_job_writes_nothing_after_the_plan(self, title: str) -> None:
-        assert wf.step(NAME, "plan", title)["if"] == f"${{{{ {RELEASED} }}}}"
+    @pytest.mark.parametrize(
+        ("title", "condition"),
+        [
+            ("Store release notes", RELEASED),
+            # 001-github-app L-b, contract Compatibilidad point 5: with an App, tag-app tags.
+            ("Create the immutable version tag", f"inputs.client-id == '' && {RELEASED}"),
+        ],
+    )
+    def test_the_plan_job_writes_nothing_after_the_plan(self, title: str, condition: str) -> None:
+        assert wf.step(NAME, "plan", title)["if"] == f"${{{{ {condition} }}}}"
 
     def test_no_build_and_no_release_run(self) -> None:
+        # 001-github-app L-b, contract Compatibilidad points 1, 2 and 3: !cancelled(), the
+        # tag-app result, and the App jobs; each still needs a planned version.
         jobs = wf.jobs(NAME)
         assert jobs["build"]["if"] == (
-            "${{ inputs.build-distribution && needs.plan.outputs.version != '' }}"
+            "${{ !cancelled() && needs.plan.result == 'success'"
+            " && (needs.tag-app.result == 'success' || needs.tag-app.result == 'skipped')"
+            " && inputs.build-distribution && needs.plan.outputs.version != '' }}"
         )
         assert jobs["release"]["if"] == (
-            "${{ always() && needs.plan.result == 'success' && needs.build.result != 'failure'"
-            " && needs.plan.outputs.version != '' }}"
+            "${{ !cancelled() && needs.plan.result == 'success'"
+            " && (needs.build.result == 'success' || needs.build.result == 'skipped')"
+            " && needs.plan.outputs.version != '' && inputs.client-id == '' }}"
+        )
+        assert jobs["tag-app"]["if"] == (
+            "${{ inputs.client-id != '' && needs.plan.outputs.version != '' }}"
+        )
+        assert jobs["release-app"]["if"] == (
+            "${{ !cancelled() && needs.plan.result == 'success'"
+            " && needs.tag-app.result == 'success'"
+            " && (needs.build.result == 'success' || needs.build.result == 'skipped')"
+            " && inputs.client-id != '' && needs.plan.outputs.version != '' }}"
         )

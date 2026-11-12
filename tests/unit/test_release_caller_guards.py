@@ -44,7 +44,8 @@ def test_a_skipped_release_releases_and_builds_nothing() -> None:
     assert outputs["distribution-built"]["value"] == "${{ jobs.build.outputs.built == 'true' }}"
     jobs = wf.jobs("release-on-label")
     assert "release-label" in cast(str, jobs["plan"]["if"])
-    assert jobs["build"]["needs"] == "plan"
+    # 001-github-app L-b, contract Compatibilidad point 2: the build also waits for tag-app.
+    assert jobs["build"]["needs"] == ["plan", "tag-app"]
 
 
 def test_a_resumed_run_passes_its_commit() -> None:

@@ -36,7 +36,10 @@ def _plan_step() -> dict[str, Any]:
 def _pin() -> re.Match[str]:
     text = (ROOT / ".github" / "workflows" / f"{NAME}.yml").read_text("utf-8")
     found = [m for line in text.splitlines() if (m := PINNED_LINE.search(line.strip()))]
-    assert len(found) == 1, "plan-release is not pinned by a release commit"
+    assert found, "plan-release is not pinned by a release commit"
+    # 001-github-app L-b, contract Compatibilidad point 6: changelog-build runs the planner
+    # again, so it may be pinned more than once, but always at one release commit.
+    assert len({(m["sha"], m["tag"]) for m in found}) == 1, "plan-release has two pins"
     return found[0]
 
 
@@ -115,7 +118,8 @@ class TestDefaultsAreUnchanged:
         )
 
     def test_the_jobs_are_the_same(self) -> None:
-        assert list(wf.jobs(NAME)) == ["plan", "build", "release"]
+        # 001-github-app L-b, contract Compatibilidad point 1: two App jobs, skipped by default.
+        assert list(wf.jobs(NAME)) == ["plan", "tag-app", "build", "release", "release-app"]
 
     def test_no_expression_is_interpolated_into_a_script(self) -> None:
         for job in wf.jobs(NAME):
