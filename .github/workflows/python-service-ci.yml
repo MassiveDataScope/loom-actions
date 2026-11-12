@@ -492,7 +492,7 @@ jobs:
 
       - name: Comment the report on the pull request
         if: ${{ always() && github.event_name == 'pull_request' && env.SAME_REPOSITORY == 'true' && steps.quality.outputs.report-file != '' }}
-        uses: MassiveDataScope/loom-actions/actions/core/pr-comment-update@017878a375d4728129792fee009296635884b6d3 # v1.2.3
+        uses: MassiveDataScope/loom-actions/actions/core/pr-comment-update@162f79c6b75e77b9f090df823db968cbb93fa817 # v1.13.3
         with:
           github-token: ${{ github.token }}
           tags: "<!-- loom-quality-report -->"
